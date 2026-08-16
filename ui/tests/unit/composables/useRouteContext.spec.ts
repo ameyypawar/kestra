@@ -83,7 +83,21 @@ describe("useRouteContext", () => {
         expect(document.title).toBe("Kestra EE")
     })
 
-    it("gives back the title it first found, not one of its own making", async () => {
+    it("gives back the base as it stands, not as it was at mount", () => {
+        // App.vue appends the environment name from its own onMounted, which runs after a
+        // child's, so the suffix can arrive after a page has already claimed the title.
+        // Handing back a copy remembered at mount would drop it.
+        const page = mountRouteContext(ref({title: "Flows"}))
+        expect(document.title).toBe("Flows | Kestra EE")
+
+        document.title = "Flows | Kestra EE - Production"
+
+        page.unmount()
+
+        expect(document.title).toBe("Kestra EE - Production")
+    })
+
+    it("still hands back the base after the title has changed in place", async () => {
         const routeInfo = ref({title: "First"})
         const page = mountRouteContext(routeInfo)
 
@@ -97,7 +111,6 @@ describe("useRouteContext", () => {
 
     it("leaves the title alone when another page has already taken it", () => {
         const leaving = mountRouteContext(ref({title: "Flows"}))
-        // The arriving page sets its own title before the previous one is torn down.
         wrapper = mountRouteContext(ref({title: "Executions"}))
         expect(document.title).toBe("Executions | Kestra EE")
 
