@@ -302,6 +302,7 @@
     import {useDiscardGuard} from "../../composables/useDiscardGuard"
     import InheritedKVs from "./InheritedKVs.vue"
     import {formatKvValueForDisplay} from "./kvValueDisplay"
+    import {parseSortQuery} from "./kvSort"
     import TimeSelect from "../executions/date-select/TimeSelect.vue"
     import NamespaceSelect from "../namespaces/components/NamespaceSelect.vue"
     import useRestoreUrl from "../../composables/useRestoreUrl"
@@ -403,11 +404,7 @@
     // The sort is kept in the URL, so it has to be read back when the table mounts:
     // otherwise a reload requests the order the URL asks for while the header shows the
     // default, and the two disagree about what the table is sorted by (#17314).
-    const urlSort = computed(() => {
-        const [prop, order] = String(route.query.sort ?? "").split(":")
-        if (!prop || !order) return {prop: "key", order: "ascending"}
-        return {prop, order: order === "desc" ? "descending" : "ascending"}
-    })
+    const urlSort = computed(() => parseSortQuery(route.query.sort))
 
     const filterQueryKey = computed(() => {
         const {page: _p, size: _s, sort: _so, ...filters} = route.query
