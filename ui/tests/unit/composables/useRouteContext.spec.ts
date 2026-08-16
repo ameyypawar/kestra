@@ -71,4 +71,46 @@ describe("useRouteContext", () => {
 
         expect(document.title).toBe("Default Dashboard | Kestra EE")
     })
+
+    it("gives the base title back when the page goes away", () => {
+        // Logging out pushes to a login page that sets no title of its own, so without this
+        // the tab keeps the name of the page behind it (#17896).
+        const page = mountRouteContext(ref({title: "Flows"}))
+        expect(document.title).toBe("Flows | Kestra EE")
+
+        page.unmount()
+
+        expect(document.title).toBe("Kestra EE")
+    })
+
+    it("gives back the title it first found, not one of its own making", async () => {
+        const routeInfo = ref({title: "First"})
+        const page = mountRouteContext(routeInfo)
+
+        routeInfo.value = {title: "Second"}
+        await nextTick()
+
+        page.unmount()
+
+        expect(document.title).toBe("Kestra EE")
+    })
+
+    it("leaves the title alone when another page has already taken it", () => {
+        const leaving = mountRouteContext(ref({title: "Flows"}))
+        // The arriving page sets its own title before the previous one is torn down.
+        wrapper = mountRouteContext(ref({title: "Executions"}))
+        expect(document.title).toBe("Executions | Kestra EE")
+
+        leaving.unmount()
+
+        expect(document.title).toBe("Executions | Kestra EE")
+    })
+
+    it("does not restore anything when embed is true", () => {
+        const page = mountRouteContext(ref({title: "Ignored"}), true)
+
+        page.unmount()
+
+        expect(document.title).toBe("Kestra EE")
+    })
 })
