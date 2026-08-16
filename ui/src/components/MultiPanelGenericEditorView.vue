@@ -12,9 +12,11 @@
             </div>
         </MultiPanelEditorTabs>
         <div class="editor-wrapper">
-            <KsSplitter class="default-theme editor-panels" :layout="splitOrientation">
+            <!-- Fixed vertical: this splitter stacks the editor above the bottom
+                 panel (the playground), which is not what the toggle is about. -->
+            <KsSplitter class="default-theme editor-panels" layout="vertical">
                 <KsSplitterPanel>
-                    <MultiPanelTabs v-model="panels" @remove-tab="onRemoveTab" />
+                    <MultiPanelTabs v-model="panels" :layout="splitOrientation" @remove-tab="onRemoveTab" />
                 </KsSplitterPanel>
                 <KsSplitterPanel v-if="bottomVisible && slots['bottom-panel']">
                     <slot name="bottom-panel" />
@@ -38,7 +40,19 @@
 
     const {t} = useI18n()
 
-    const splitOrientation = useStorage<"vertical" | "horizontal">("editor-split-orientation", "vertical")
+    /**
+     * How the editor panels sit next to each other.
+     *
+     * `horizontal` (the default) keeps them side by side, which is how the editor
+     * has always opened. This drives the splitter inside MultiPanelTabs — it used
+     * to drive the outer one, which holds a second panel only in playground mode
+     * and so ignored the setting entirely the rest of the time.
+     *
+     * The key is deliberately not the old `editor-split-orientation`: that value
+     * described the outer splitter, where the same two words meant the opposite
+     * arrangement, and reusing it would flip existing users' panels to stacked.
+     */
+    const splitOrientation = useStorage<"vertical" | "horizontal">("editor-panels-orientation", "horizontal")
 
     function toggleOrientation() {
         splitOrientation.value = splitOrientation.value === "vertical" ? "horizontal" : "vertical"
