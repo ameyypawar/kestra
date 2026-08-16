@@ -31,6 +31,34 @@ function readSavedRestoreState(route: RouteLocationNormalizedLoaded): LocationQu
     }
 }
 
+/**
+ * The query to navigate to, given what the defaults resolved to.
+ *
+ * `resolved` was computed against the saved restore state as well as the URL, so it can
+ * contain filters the URL never had. Those are there to tell the defaults what not to fill
+ * — replaying them would restore filters onto a page the user did not set them on, and it
+ * would do so even when the URL already has a query, which is more than the restore itself
+ * ever does (#17798). So only the keys the defaults added, and the ones they removed, are
+ * carried over.
+ */
+export function applyResolvedDefaults(
+    currentQuery: LocationQuery,
+    consideredQuery: LocationQuery,
+    resolvedQuery: LocationQuery,
+): LocationQuery {
+    const query: LocationQuery = {...currentQuery}
+
+    Object.entries(resolvedQuery).forEach(([key, value]) => {
+        if (!(key in consideredQuery)) query[key] = value
+    })
+
+    Object.keys(currentQuery).forEach(key => {
+        if (!(key in resolvedQuery)) delete query[key]
+    })
+
+    return query
+}
+
 export function defaultNamespace() {
     return localStorage.getItem("defaultNamespace")
 }
@@ -91,11 +119,12 @@ export function useDefaultFilter(
         // that neither the URL nor the pending restore covers — letting newly
         // changed defaults (e.g. defaultNamespace from settings) take effect
         // without clobbering keys the user already chose.
-        const merged = {...readSavedRestoreState(route), ...route.query}
-        const {query, change} = applyDefaultFilters(merged, defaultOptions)
-        if(change) {
-            router.replace({...route, query})
-        }
+        const considered = {...readSavedRestoreState(route), ...route.query}
+        const {query: resolved, change} = applyDefaultFilters(considered, defaultOptions)
+        if (!change) return
+
+        const query = applyResolvedDefaults(route.query, considered, resolved)
+        router.replace({...route, query})
     })
 
     function resetDefaultFilter(){
