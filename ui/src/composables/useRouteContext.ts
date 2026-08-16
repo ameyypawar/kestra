@@ -1,25 +1,19 @@
 import {Ref, onUnmounted, watch} from "vue"
 
+/** The part of a title after the last pipe, or the whole of it when there is none. */
+function baseOf(title: string): string {
+    const separator = title.lastIndexOf("|")
+    return separator >= 0 ? title.substring(separator + 1).trim() : title
+}
+
 export default function useRouteContext(routeInfo: Ref<{title: string}>, embed: boolean = false) {
-    // The title as it was before this page took it over, and the last value this page set.
-    // Kept so the page can hand the title back when it goes away, rather than leaving its own
-    // name on a tab that has moved on to somewhere that sets no title — the login page after a
-    // logout, which is a client-side navigation and so never rebuilds the document (#17896).
-    let baseTitle: string | undefined
+    // The last title this page set, so it can tell whether the tab still shows its own name
+    // once it goes away.
     let ownTitle: string | undefined
 
     function handleTitle(){
         if(!embed) {
-            let base
-
-            if (document.title.lastIndexOf("|") >= 0) {
-                base = document.title.substring(document.title.lastIndexOf("|") + 1).trim()
-            } else {
-                base = document.title
-            }
-
-            baseTitle ??= base
-            ownTitle = (routeInfo.value?.title ?? "") + " | " + base
+            ownTitle = (routeInfo.value?.title ?? "") + " | " + baseOf(document.title)
             document.title = ownTitle
         }
     }
@@ -27,13 +21,18 @@ export default function useRouteContext(routeInfo: Ref<{title: string}>, embed: 
     watch(() => routeInfo.value?.title, handleTitle, {immediate: true})
 
     onUnmounted(() => {
-        if (embed || baseTitle === undefined) return
+        if (embed || ownTitle === undefined) return
 
-        // Only when the title is still ours. Leaving one titled page for another means the
-        // arriving page has already set its own, and overwriting that would put the tab a
-        // page behind.
+        // Only when the tab still shows this page's name: moving between two pages means the
+        // arriving one has already set its own, and that has to stand. Otherwise hand the
+        // base back, so leaving for a page that sets no title of its own — the login page
+        // after a logout, which never rebuilds the document — does not keep this one (#17896).
+        //
+        // Derived here rather than remembered from mount: App.vue appends the environment
+        // name to the title from its own onMounted, which runs after a child's, so a
+        // remembered copy can predate the suffix and dropping it back would lose it.
         if (document.title === ownTitle) {
-            document.title = baseTitle
+            document.title = baseOf(document.title)
         }
     })
 }
