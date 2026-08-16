@@ -72,12 +72,15 @@
         routeTabsStore.displayMode === "select" ? routeTabsStore.visibleTabs : [],
     )
 
+    const routeTab = computed(() => {
+        const fromRoute = route?.meta?.tab ?? route?.params?.tab
+        return typeof fromRoute === "string" ? fromRoute : undefined
+    })
+
     const activeTabValue = computed(() => {
         const fromEmbed = routeTabsStore.embedActiveTab
         if (fromEmbed !== undefined) return fromEmbed
-        const fromRoute = route?.meta?.tab ?? route?.params?.tab
-        const explicit = typeof fromRoute === "string" ? fromRoute : undefined
-        return explicit ?? selectTabs.value[0]?.name ?? "default"
+        return routeTab.value ?? selectTabs.value[0]?.name ?? "default"
     })
 
     function onTabChange(value: string) {
@@ -137,9 +140,14 @@
     // Tabs of the same page are separate bookmarks, so the label has to say which
     // one: it is otherwise built from the breadcrumb and title alone, and the
     // sidebar renders `label ?? path`, leaving two entries that read identically.
+    //
+    // Deliberately not activeTabValue: that falls back to the first tab and then to
+    // "default" so the selector always has a value, which would label a bookmark
+    // with a tab the user is not on.
     const activeTabTitle = computed(() => {
-        if (routeTabsStore.visibleTabs.length < 2) return undefined
-        return routeTabsStore.tabs.find((tab) => (tab.name ?? "default") === activeTabValue.value)?.title
+        const tab = routeTab.value
+        if (!tab || routeTabsStore.visibleTabs.length < 2) return undefined
+        return routeTabsStore.visibleTabs.find((visible) => visible.name === tab)?.title
     })
 
     const bookmarkLabel = computed(() => {
