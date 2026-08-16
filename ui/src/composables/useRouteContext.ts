@@ -6,32 +6,38 @@ function baseOf(title: string): string {
     return separator >= 0 ? title.substring(separator + 1).trim() : title
 }
 
+/** The part of a title before the last pipe — the page's own name. */
+function pageOf(title: string): string {
+    const separator = title.lastIndexOf("|")
+    return separator >= 0 ? title.substring(0, separator).trim() : ""
+}
+
 export default function useRouteContext(routeInfo: Ref<{title: string}>, embed: boolean = false) {
-    // The last title this page set, so it can tell whether the tab still shows its own name
-    // once it goes away.
-    let ownTitle: string | undefined
+    // The page name this instance last put in the tab, so it can tell on the way out whether
+    // the tab is still showing it.
+    let ownPage: string | undefined
 
     function handleTitle(){
         if(!embed) {
-            ownTitle = (routeInfo.value?.title ?? "") + " | " + baseOf(document.title)
-            document.title = ownTitle
+            ownPage = routeInfo.value?.title ?? ""
+            document.title = ownPage + " | " + baseOf(document.title)
         }
     }
 
     watch(() => routeInfo.value?.title, handleTitle, {immediate: true})
 
     onUnmounted(() => {
-        if (embed || ownTitle === undefined) return
+        if (embed || ownPage === undefined) return
 
-        // Only when the tab still shows this page's name: moving between two pages means the
-        // arriving one has already set its own, and that has to stand. Otherwise hand the
-        // base back, so leaving for a page that sets no title of its own — the login page
-        // after a logout, which never rebuilds the document — does not keep this one (#17896).
+        // Matched on the page name rather than the whole title: App.vue appends the
+        // environment name after a page has claimed it, so comparing the two in full would
+        // never match on an instance that has one, and the title would never be handed back.
         //
-        // Derived here rather than remembered from mount: App.vue appends the environment
-        // name to the title from its own onMounted, which runs after a child's, so a
-        // remembered copy can predate the suffix and dropping it back would lose it.
-        if (document.title === ownTitle) {
+        // When the names differ, the page arriving after this one has already set its own and
+        // that has to stand. When they match, hand the base back — so leaving for a page that
+        // sets no title of its own, the login page after a logout, does not keep this one
+        // sitting in the tab (#17896).
+        if (pageOf(document.title) === ownPage) {
             document.title = baseOf(document.title)
         }
     })
