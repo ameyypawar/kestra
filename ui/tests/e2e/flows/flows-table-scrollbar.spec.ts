@@ -1,21 +1,22 @@
 import {expect, test} from "@playwright/test"
 
-// #17369: the flows table is wider than its container once the window is small or
-// zoomed, and it does scroll — but Element Plus hides the native scrollbar and keeps
-// its own hidden, so nothing says the rest of the table is there.
+// #17369: the flows table is wider than its container on a small or zoomed window.
+// It does scroll, but Element Plus hides the native scrollbar and auto-hides its own,
+// so at rest nothing says the rest of the table is there.
 test.describe("Flows table", () => {
-    // 1280px at 110% browser zoom lays out as 1280/1.1 CSS px. Zoom is emulated by the
-    // equivalent viewport because it is the same thing to layout, and Playwright cannot
-    // drive the browser's own zoom.
+    // Narrow enough that the table overflows whatever the instance holds. The issue
+    // reports 1280 at 110% zoom, which lays out as ~1164 CSS px, but whether that
+    // width overflows depends on the data — namespace and id lengths drive the
+    // column widths — so it would make this test pass or fail on seeding.
     test("shows a scrollbar when it overflows sideways", async ({page}) => {
-        await page.setViewportSize({width: 1164, height: 900})
+        await page.setViewportSize({width: 800, height: 900})
         await page.goto("/ui/main/flows")
 
         await expect(page.locator("th").first()).toBeVisible()
 
         const state = () => page.evaluate(() => {
-            // The page has several scrollbars (the sidebar has one too), so start from the
-            // table's own header and walk out to the wrapper that holds it.
+            // The page has several scrollbars — the sidebar has one too — so start from
+            // the table's own header and walk out to the wrapper holding it.
             let wrap: HTMLElement | null = document.querySelector("th")
             while (wrap && !wrap.classList?.contains("kel-scrollbar__wrap")) {
                 wrap = wrap.parentElement
@@ -27,15 +28,17 @@ test.describe("Flows table", () => {
             return {
                 hidden: wrap.scrollWidth - wrap.clientWidth,
                 thumbWidth: thumb?.getBoundingClientRect().width ?? 0,
+                // The bar is laid out even with nothing to scroll, so width alone does
+                // not mean anything is on screen.
+                thumbOpacity: thumb ? Number(getComputedStyle(thumb).opacity) : 0,
             }
         })
 
-        // Precondition: at this width the table really does overflow, otherwise the
-        // assertion below would pass for the wrong reason.
+        // Precondition: the table really does overflow here, otherwise the assertions
+        // below would hold for the wrong reason.
         await expect.poll(async () => (await state())?.hidden ?? 0).toBeGreaterThan(0)
 
-        // The affordance a user can actually see. Asserted on the thumb rather than the
-        // bar, since the bar can be laid out with a zero-width thumb inside it.
         await expect.poll(async () => (await state())?.thumbWidth ?? 0).toBeGreaterThan(0)
+        await expect.poll(async () => (await state())?.thumbOpacity ?? 0).toBeGreaterThan(0)
     })
 })
