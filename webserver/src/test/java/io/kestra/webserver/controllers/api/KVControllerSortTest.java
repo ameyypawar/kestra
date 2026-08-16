@@ -24,12 +24,15 @@ import io.kestra.webserver.responses.PagedResults;
 import io.micronaut.core.type.Argument;
 import io.micronaut.data.model.Pageable;
 import io.micronaut.http.HttpRequest;
+import io.micronaut.http.HttpStatus;
 import io.micronaut.http.client.annotation.Client;
+import io.micronaut.http.client.exceptions.HttpClientResponseException;
 import io.micronaut.reactor.http.client.ReactorHttpClient;
 import jakarta.inject.Inject;
 
 import static io.kestra.core.tenant.TenantService.MAIN_TENANT;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Sorting the KV table used to fail for any field whose column is named differently from the
@@ -59,15 +62,8 @@ class KVControllerSortTest {
         kvMetadataRepository.purge(persisted);
     }
 
-    private KVStore seedTwoEntries() throws IOException {
-        String namespace = TestsUtils.randomNamespace();
-        KVStore kvStore = new InternalKVStore(MAIN_TENANT, namespace, storageInterface, kvMetadataStateStore);
-
-        Instant expiration = Instant.now().plus(Duration.ofMinutes(5)).truncatedTo(ChronoUnit.MILLIS);
-        kvStore.put("alpha-key", new KVValueAndMetadata(new KVMetadata("alpha description", expiration), "alpha-value"));
-        kvStore.put("beta-key", new KVValueAndMetadata(new KVMetadata("beta description", expiration), "beta-value"));
-
-        return kvStore;
+    private KVStore kvStore() {
+        return new InternalKVStore(MAIN_TENANT, TestsUtils.randomNamespace(), storageInterface, kvMetadataStateStore);
     }
 
     private PagedResults<KVEntry> list(String sort) {
@@ -78,13 +74,16 @@ class KVControllerSortTest {
     }
 
     /**
-     * Every column the KV table offers as sortable. A field with no column behind it fails the
-     * request outright, so reaching the assertion at all is most of the point.
+     * Every field the KV table offers as sortable. A field with no column behind it fails the
+     * request outright, so reaching the assertions at all is most of the point.
      */
     @ParameterizedTest
     @ValueSource(strings = {"key", "namespace", "description", "updateDate", "creationDate", "revision", "expirationDate"})
     void shouldSortByEveryOfferedField(String field) throws IOException {
-        seedTwoEntries();
+        KVStore kvStore = kvStore();
+        Instant expiration = Instant.now().plus(Duration.ofMinutes(5)).truncatedTo(ChronoUnit.MILLIS);
+        kvStore.put("alpha-key", new KVValueAndMetadata(new KVMetadata("alpha description", expiration), "alpha-value"));
+        kvStore.put("beta-key", new KVValueAndMetadata(new KVMetadata("beta description", expiration), "beta-value"));
 
         for (String direction : List.of("asc", "desc")) {
             PagedResults<KVEntry> results = list(field + ":" + direction);
@@ -94,22 +93,40 @@ class KVControllerSortTest {
         }
     }
 
+    /**
+     * An unmapped field used to reach the database and come back as a SQL failure. The mapper is
+     * the allowlist PageableUtils checks, so an unknown one is now the client's error.
+     */
     @Test
-    void shouldOrderByLastModified() throws IOException {
-        String namespace = TestsUtils.randomNamespace();
-        KVStore kvStore = new InternalKVStore(MAIN_TENANT, namespace, storageInterface, kvMetadataStateStore);
+    void shouldRejectAnUnknownSortField() {
+        HttpClientResponseException exception = assertThrows(
+            HttpClientResponseException.class,
+            () -> list("notAColumn:asc")
+        );
 
-        // Written oldest-first, and deliberately not in key order, so ordering by the update
-        // date cannot be satisfied by falling back to the key.
-        kvStore.put("z-oldest", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "one"));
-        kvStore.put("a-newest", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "two"));
+        assertThat(exception.getStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+    }
 
-        PagedResults<KVEntry> descending = list("updateDate:desc");
-        assertThat(descending.getResults()).hasSize(2);
-        assertThat(descending.getResults().getFirst().key()).isEqualTo("a-newest");
+    /**
+     * Rewriting a key advances its update date but not its creation date, so the two orderings
+     * disagree. Without that, every row's dates move together and a mapping pointing at the
+     * creation column would satisfy this just as well.
+     */
+    @Test
+    void shouldOrderByLastModifiedRatherThanCreation() throws IOException {
+        KVStore kvStore = kvStore();
 
-        PagedResults<KVEntry> ascending = list("updateDate:asc");
-        assertThat(ascending.getResults()).hasSize(2);
-        assertThat(ascending.getResults().getFirst().key()).isEqualTo("z-oldest");
+        kvStore.put("a-first-created", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "one"));
+        kvStore.put("b-second-created", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "two"));
+        // Now the oldest row becomes the most recently updated one.
+        kvStore.put("a-first-created", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "one-again"));
+
+        PagedResults<KVEntry> byUpdate = list("updateDate:desc");
+        assertThat(byUpdate.getResults()).hasSize(2);
+        assertThat(byUpdate.getResults().getFirst().key()).isEqualTo("a-first-created");
+
+        PagedResults<KVEntry> byCreation = list("creationDate:asc");
+        assertThat(byCreation.getResults()).hasSize(2);
+        assertThat(byCreation.getResults().getFirst().key()).isEqualTo("a-first-created");
     }
 }
