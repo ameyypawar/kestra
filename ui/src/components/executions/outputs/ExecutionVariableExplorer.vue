@@ -16,7 +16,7 @@
 
                     <!-- Center: tree / raw JSON of the selected value -->
                     <KsSplitterPanel class="variable-explorer__panel variable-explorer__panel--viewer">
-                        <div class="viewer" :class="{'viewer--fill': isRawEditor}">
+                        <div class="viewer" :class="{'viewer--fill': isRawEditor || multilineText !== undefined}">
                             <div class="viewer__header">
                                 <KsSegmented
                                     v-if="isExpandableValue && !fileSelectedOutput"
@@ -58,6 +58,8 @@
                                     :executionId="execution.id"
                                 />
                             </div>
+
+                            <pre v-else-if="multilineText !== undefined" class="viewer__text">{{ multilineText }}</pre>
 
                             <KsJsonTree
                                 v-else-if="isExpandableValue"
@@ -385,6 +387,19 @@
         return undefined
     })
 
+    /**
+     * The previewed value when it is text written across several lines — a log, a stack trace,
+     * a rendered template.
+     *
+     * Both other views destroy those line breaks: the tree shows the string as one flattened
+     * preview, and JSON escapes them to a literal `\n`. Neither is readable for the thing the
+     * outputs view is most often opened for, so text like this is shown as text.
+     */
+    const multilineText = computed(() => {
+        const value = previewedValue.value
+        return typeof value === "string" && value.includes("\n") ? value : undefined
+    })
+
     const rawValue = computed(() =>
         typeof selectedValue.value === "string"
             ? selectedValue.value
@@ -511,6 +526,26 @@
         font-size: var(--ks-font-size-sm);
         word-break: break-word;
         padding: var(--ks-spacing-2) var(--ks-spacing-4);
+
+        // A scalar can still be several lines of text; <code> alone would collapse them.
+        code {
+            white-space: pre-wrap;
+        }
+    }
+
+    // Text kept as written: line breaks preserved, long lines wrapped rather than
+    // scrolled sideways, and the block takes the height it is given so a long trace
+    // uses the panel instead of leaving it empty.
+    &__text {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        margin: 0;
+        padding: var(--ks-spacing-2) var(--ks-spacing-4);
+        font-family: var(--ks-font-family-mono);
+        font-size: var(--ks-font-size-sm);
+        white-space: pre-wrap;
+        word-break: break-word;
     }
 
     .file-preview {
