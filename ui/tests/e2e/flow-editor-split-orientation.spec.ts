@@ -5,6 +5,9 @@ import {shared} from "./fixtures/shared"
 
 const TENANT = process.env.E2E_TENANT ?? "main"
 
+// One node per panel: `data-panel-index` is also on the tab strip.
+const PANEL = ".content-panel[data-panel-index]"
+
 /*
  * A cookie-free API context, same override as blocks.fixture and
  * executions.fixture. The built-in `request` inherits `use.storageState`, which
@@ -44,21 +47,18 @@ test.describe("Flow editor — split orientation", () => {
             localStorage.removeItem("editor-split-orientation")
         })
         await page.goto(`/ui/${TENANT}/flows/edit/${shared.namespace}/${flowId}/edit`)
+
+        // An orientation is only observable with more than one panel; the editor
+        // opens with two.
+        await expect.poll(() => page.locator(PANEL).count()).toBeGreaterThanOrEqual(2)
     })
 
     test.afterEach(async () => {
         await flowsApi.removeFlowsViaApi()
     })
 
-    async function openSecondPanel(page: Page) {
-        // Each editor tab button opens its own panel, so this leaves two side by
-        // side — an orientation is only observable with more than one.
-        await page.getByRole("button", {name: "Topology", exact: true}).click()
-        await expect(page.locator("[data-panel-index]")).toHaveCount(2)
-    }
-
     async function panelBoxes(page: Page) {
-        const panels = page.locator("[data-panel-index]")
+        const panels = page.locator(PANEL)
         const first = await panels.nth(0).boundingBox()
         const second = await panels.nth(1).boundingBox()
         expect(first).not.toBeNull()
@@ -67,8 +67,6 @@ test.describe("Flow editor — split orientation", () => {
     }
 
     test("the toggle moves the editor panels between side-by-side and stacked", async ({page}) => {
-        await openSecondPanel(page)
-
         // Side by side: same top edge, different left edge.
         const [beforeA, beforeB] = await panelBoxes(page)
         expect(Math.abs(beforeA.y - beforeB.y)).toBeLessThan(4)
@@ -87,7 +85,6 @@ test.describe("Flow editor — split orientation", () => {
     })
 
     test("the choice survives a reload", async ({page}) => {
-        await openSecondPanel(page)
         await page.locator(".orientation-toggle").click()
 
         await expect(async () => {
@@ -96,7 +93,7 @@ test.describe("Flow editor — split orientation", () => {
         }).toPass({timeout: 5000})
 
         await page.reload()
-        await expect(page.locator("[data-panel-index]")).toHaveCount(2)
+        await expect.poll(() => page.locator(PANEL).count()).toBeGreaterThanOrEqual(2)
 
         const [a, b] = await panelBoxes(page)
         expect(Math.abs(a.x - b.x)).toBeLessThan(4)
