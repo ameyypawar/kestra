@@ -302,7 +302,7 @@
     import {useDiscardGuard} from "../../composables/useDiscardGuard"
     import InheritedKVs from "./InheritedKVs.vue"
     import {formatKvValueForDisplay} from "./kvValueDisplay"
-    import {parseSortQuery} from "./kvSort"
+    import {DEFAULT_KV_SORT, parseSortQuery} from "./kvSort"
     import TimeSelect from "../executions/date-select/TimeSelect.vue"
     import NamespaceSelect from "../namespaces/components/NamespaceSelect.vue"
     import useRestoreUrl from "../../composables/useRestoreUrl"
@@ -352,13 +352,17 @@
     const namespaceFilter = (namespace: string) =>
         [{field: "namespace" as const, operation: "EQUALS" as const, value: namespace}]
 
+    // `key` rather than the column behind it: the listing only accepts the field names it
+    // advertises, and this has to agree with the sort the header shows (#17314).
+    const DEFAULT_SORT_PARAM = `${DEFAULT_KV_SORT.prop}:asc`
+
     const loadData = async ({page, size, sort}: {page: number; size: number; sort?: string}) => {
         if (!loadInit.value) return
         const activeFilters = routeQueryToQueryFilters(route.query)
         const kvsResponse = await KvAPI.listAllKeys(loadQuery({
             size,
             page,
-            sort: sort ?? String(route.query.sort ?? "name:asc"),
+            sort: sort ?? String(route.query.sort ?? DEFAULT_SORT_PARAM),
             filters: [
                 ...activeFilters,
                 ...(props.namespace === undefined ? [] : namespaceFilter(props.namespace)),
