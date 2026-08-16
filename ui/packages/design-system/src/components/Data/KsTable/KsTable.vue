@@ -40,6 +40,14 @@
         fit?: boolean
         cellClassName?: string | ((data: any) => string)
         rowClassName?: string | ((data: any) => string)
+        /**
+         * Element Plus hides the native scrollbar on its wrapper (`--hidden-default`)
+         * because it draws its own, and its own is `v-show`-gated. A table narrower than
+         * its content then scrolls with nothing to say that it can. Kept on by default so
+         * the affordance matches the overflow; no thumb is rendered when the content fits,
+         * so tables that do fit are unaffected.
+         */
+        scrollbarAlwaysOn?: boolean
     }>(), {
         data: undefined,
         tableLayout: undefined,
@@ -52,6 +60,7 @@
         fit: undefined,
         cellClassName: undefined,
         rowClassName: undefined,
+        scrollbarAlwaysOn: true,
     })
 
     const emit = defineEmits<{
