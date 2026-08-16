@@ -4,7 +4,12 @@ import {ElTable} from "element-plus"
 import KestraDesignSystem from "../../../src/index"
 import KsTable from "../../../src/components/Data/KsTable/KsTable.vue"
 
-const globalConfig = {plugins: [KestraDesignSystem]}
+// An empty table renders the empty slot, which reaches KsNoData's `$t` in the
+// template — a global that no plugin here provides.
+const globalConfig = {
+    plugins: [KestraDesignSystem],
+    mocks: {$t: (key: string) => key},
+}
 
 describe("KsTable", () => {
     test("keeps the scrollbar on, so sideways overflow is visible", () => {
