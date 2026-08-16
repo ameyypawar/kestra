@@ -1,4 +1,5 @@
-import {beforeEach, describe, expect, it} from "vitest"
+import {afterEach, beforeEach, describe, expect, it} from "vitest"
+import {nextTick} from "vue"
 import {createPinia, setActivePinia} from "pinia"
 import {useBookmarksStore} from "../../../src/stores/bookmarks"
 
@@ -13,11 +14,20 @@ describe("bookmarks store", () => {
         localStorage.clear()
     })
 
-    it("adds a page and persists it", () => {
+    // The suite shares one jsdom per worker and fails on leaked storage keys
+    // (tests/unit/leakGuard.ts), so the persisted list has to go too.
+    afterEach(() => {
+        localStorage.clear()
+    })
+
+    it("adds a page and persists it", async () => {
         const store = useBookmarksStore()
         store.add({path: OVERVIEW, label: "Overview"})
 
         expect(store.pages).toEqual([{path: OVERVIEW, label: "Overview"}])
+
+        // useStorage writes on the watcher's flush, not on assignment.
+        await nextTick()
         expect(JSON.parse(localStorage.getItem("starred.bookmarks") ?? "[]")).toHaveLength(1)
     })
 
@@ -43,8 +53,8 @@ describe("bookmarks store", () => {
             store.add({path: WITH_FILTER, label: "company.team: my_flow"})
             store.add({path: WITH_OTHER_FILTER, label: "company.team: my_flow"})
 
-            // Two entries here render identically in the sidebar — the label comes
-            // from the breadcrumb and title, not the path.
+            // Two entries here would render identically in the sidebar, which shows
+            // `label ?? path`, and the label carries no filter state.
             expect(store.pages).toHaveLength(1)
             expect(store.pages[0].path).toBe(WITH_FILTER)
         })
@@ -57,7 +67,7 @@ describe("bookmarks store", () => {
             expect(store.isBookmarked(OVERVIEW)).toBe(true)
         })
 
-        it("keeps the query on what it stores, so the view opens as bookmarked", () => {
+        it("keeps the query on what it stores, so the bookmark opens the view it was taken from", () => {
             const store = useBookmarksStore()
             store.add({path: WITH_FILTER, label: "company.team: my_flow"})
 
@@ -68,8 +78,8 @@ describe("bookmarks store", () => {
             const store = useBookmarksStore()
             store.add({path: WITH_FILTER, label: "company.team: my_flow"})
 
-            // The star sends whatever the current URL is, which need not carry the
-            // same query as the stored entry.
+            // The star sends the current URL, which need not carry the same query
+            // as the stored entry.
             store.remove({path: WITH_OTHER_FILTER})
 
             expect(store.pages).toEqual([])
@@ -83,10 +93,10 @@ describe("bookmarks store", () => {
             expect(store.pages[0].label).toBe("new")
         })
 
-        it("still treats different pages as different bookmarks", () => {
+        it("still treats a different tab of the same page as its own bookmark", () => {
             const store = useBookmarksStore()
-            store.add({path: OVERVIEW, label: "Overview"})
-            store.add({path: EXECUTIONS, label: "Executions"})
+            store.add({path: OVERVIEW, label: "company.team: my_flow (Overview)"})
+            store.add({path: EXECUTIONS, label: "company.team: my_flow (Executions)"})
 
             expect(store.pages).toHaveLength(2)
             expect(store.isBookmarked(EXECUTIONS)).toBe(true)

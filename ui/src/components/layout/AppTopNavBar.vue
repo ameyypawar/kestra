@@ -134,15 +134,28 @@
     // recognised when filters change underneath it (#17889).
     const bookmarked = computed(() => bookmarksStore.isBookmarked(currentFavURI.value))
 
+    // Tabs of the same page are separate bookmarks, so the label has to say which
+    // one: it is otherwise built from the breadcrumb and title alone, and the
+    // sidebar renders `label ?? path`, leaving two entries that read identically.
+    const activeTabTitle = computed(() => {
+        if (routeTabsStore.visibleTabs.length < 2) return undefined
+        return routeTabsStore.tabs.find((tab) => (tab.name ?? "default") === activeTabValue.value)?.title
+    })
+
+    const bookmarkLabel = computed(() => {
+        const base = store.breadcrumb.length
+            ? `${store.breadcrumb[store.breadcrumb.length - 1].label}: ${store.title}`
+            : store.title
+        return activeTabTitle.value ? `${base} (${activeTabTitle.value})` : base
+    })
+
     const onStarClick = () => {
         if (bookmarked.value) {
             bookmarksStore.remove({path: currentFavURI.value})
         } else {
             bookmarksStore.add({
                 path: currentFavURI.value,
-                label: store.breadcrumb.length
-                    ? `${store.breadcrumb[store.breadcrumb.length - 1].label}: ${store.title}`
-                    : store.title,
+                label: bookmarkLabel.value,
             })
         }
     }
