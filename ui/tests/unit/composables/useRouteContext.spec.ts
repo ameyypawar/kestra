@@ -85,8 +85,7 @@ describe("useRouteContext", () => {
 
     it("gives back the base as it stands, not as it was at mount", () => {
         // App.vue appends the environment name from its own onMounted, which runs after a
-        // child's, so the suffix can arrive after a page has already claimed the title.
-        // Handing back a copy remembered at mount would drop it.
+        // child's, so the suffix can arrive after a page has claimed the title.
         const page = mountRouteContext(ref({title: "Flows"}))
         expect(document.title).toBe("Flows | Kestra EE")
 
@@ -117,6 +116,19 @@ describe("useRouteContext", () => {
         leaving.unmount()
 
         expect(document.title).toBe("Executions | Kestra EE")
+    })
+
+    it("leaves the title alone when the page that took it carries the same name", () => {
+        // A drawer over the page behind it, or two flows called the same thing: comparing
+        // names cannot tell them apart, and the one leaving would strip a title that is
+        // still on screen.
+        const leaving = mountRouteContext(ref({title: "Flows"}))
+        wrapper = mountRouteContext(ref({title: "Flows"}))
+        expect(document.title).toBe("Flows | Kestra EE")
+
+        leaving.unmount()
+
+        expect(document.title).toBe("Flows | Kestra EE")
     })
 
     it("does not restore anything when embed is true", () => {
