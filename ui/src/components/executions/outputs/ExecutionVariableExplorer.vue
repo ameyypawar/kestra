@@ -117,6 +117,7 @@
     import SidebarList, {ExplorerItem, ExplorerSection} from "./SidebarList.vue"
     import ExpressionDebugger from "./ExpressionDebugger.vue"
     import {taskOutputLabel} from "./explorerSearch"
+    import {multilineTextValue} from "./multilineText"
     import * as Utils from "../../../utils/utils"
     import FilePreview from "../FilePreview.vue"
 
@@ -387,18 +388,7 @@
         return undefined
     })
 
-    /**
-     * The previewed value when it is text written across several lines — a log, a stack trace,
-     * a rendered template.
-     *
-     * Both other views destroy those line breaks: the tree shows the string as one flattened
-     * preview, and JSON escapes them to a literal `\n`. Neither is readable for the thing the
-     * outputs view is most often opened for, so text like this is shown as text.
-     */
-    const multilineText = computed(() => {
-        const value = previewedValue.value
-        return typeof value === "string" && value.includes("\n") ? value : undefined
-    })
+    const multilineText = computed(() => multilineTextValue(previewedValue.value))
 
     const rawValue = computed(() =>
         typeof selectedValue.value === "string"
