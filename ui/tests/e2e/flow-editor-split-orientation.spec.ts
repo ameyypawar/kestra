@@ -1,9 +1,29 @@
-import {expect, test} from "./fixtures/auth"
+import {expect, test as authenticated} from "./fixtures/auth"
 import type {Page} from "@playwright/test"
 import {FlowsApi} from "./api/flows.api"
 import {shared} from "./fixtures/shared"
 
 const TENANT = process.env.E2E_TENANT ?? "main"
+
+/*
+ * A cookie-free API context, same override as blocks.fixture and
+ * executions.fixture. The built-in `request` inherits `use.storageState`, which
+ * carries the basic-auth cookie; CsrfTokenFilter#hasCookieAuth then treats the
+ * POST as cookie-authenticated and rejects it with a 403 unless it also carries
+ * an X-CSRF-TOKEN. FlowsApi authenticates with the CSRF-exempt Authorization
+ * header instead, so a fresh context keeps that path open. `page` keeps the
+ * shared storage state, so the UI stays signed in.
+ */
+const test = authenticated.extend({
+    request: async ({playwright, baseURL}, use) => {
+        const context = await playwright.request.newContext({
+            baseURL,
+            storageState: {cookies: [], origins: []},
+        })
+        await use(context)
+        await context.dispose()
+    },
+})
 
 // The toggle in the editor tab bar is labelled "split horizontally / vertically".
 // It used to drive the splitter holding the editor and the playground, which
