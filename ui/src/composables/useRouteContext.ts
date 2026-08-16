@@ -6,39 +6,34 @@ function baseOf(title: string): string {
     return separator >= 0 ? title.substring(separator + 1).trim() : title
 }
 
-/** The part of a title before the last pipe — the page's own name. */
-function pageOf(title: string): string {
-    const separator = title.lastIndexOf("|")
-    return separator >= 0 ? title.substring(0, separator).trim() : ""
-}
+/**
+ * Whoever wrote the tab title last. Shared across every caller, so a page can tell on the way
+ * out whether the title is still the one it put there, without comparing strings — two pages
+ * can carry the same name, and App.vue rewrites the title after the fact to append the
+ * environment name.
+ */
+let titleOwner: symbol | undefined
 
 export default function useRouteContext(routeInfo: Ref<{title: string}>, embed: boolean = false) {
-    // The page name this instance last put in the tab, so it can tell on the way out whether
-    // the tab is still showing it.
-    let ownPage: string | undefined
+    const owner = Symbol("routeContext")
 
     function handleTitle(){
         if(!embed) {
-            ownPage = routeInfo.value?.title ?? ""
-            document.title = ownPage + " | " + baseOf(document.title)
+            document.title = (routeInfo.value?.title ?? "") + " | " + baseOf(document.title)
+            titleOwner = owner
         }
     }
 
     watch(() => routeInfo.value?.title, handleTitle, {immediate: true})
 
     onUnmounted(() => {
-        if (embed || ownPage === undefined) return
+        // Only the page still holding the title gives it back. On a normal route change the
+        // arriving page has already taken ownership, and its title has to stand; here the
+        // page is leaving for one that sets no title of its own — the login page after a
+        // logout, which is a client-side navigation and never rebuilds the document (#17896).
+        if (embed || titleOwner !== owner) return
 
-        // Matched on the page name rather than the whole title: App.vue appends the
-        // environment name after a page has claimed it, so comparing the two in full would
-        // never match on an instance that has one, and the title would never be handed back.
-        //
-        // When the names differ, the page arriving after this one has already set its own and
-        // that has to stand. When they match, hand the base back — so leaving for a page that
-        // sets no title of its own, the login page after a logout, does not keep this one
-        // sitting in the tab (#17896).
-        if (pageOf(document.title) === ownPage) {
-            document.title = baseOf(document.title)
-        }
+        document.title = baseOf(document.title)
+        titleOwner = undefined
     })
 }
