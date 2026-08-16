@@ -130,6 +130,10 @@ public class WebhookService {
         // the trigger is matched on the raw flow, but the execution is built from the flow the executor will run
         FlowInterface resolvedFlow = FlowMetaStores.findForRuntimeOrRaw(flowMetaStore, context.flow());
 
+        // The trigger's inputs are deliberately not set on the builder: they are still raw `{{ ... }}` templates
+        // here, whereas an execution's inputs are its resolved, typed values. Attaching them would make the run
+        // context built below decrypt a SECRET input that is still a String. They are set once rendered and read
+        // through FlowInputOutput, as the other trigger types do through TriggerService.
         Execution execution = Execution.builder()
             // The caller mints the id before reading the request so that files stored for the call already live
             // under this execution; it is only null for a context built without one.
@@ -138,7 +142,6 @@ public class WebhookService {
             .namespace(context.flow().getNamespace())
             .flowId(context.flow().getId())
             .flowRevision(context.flow().getRevision())
-            .inputs(trigger.getInputs())
             .variables(resolvedFlow.getVariables())
             .state(new State())
             .trigger(ExecutionTrigger.of(trigger, output))
