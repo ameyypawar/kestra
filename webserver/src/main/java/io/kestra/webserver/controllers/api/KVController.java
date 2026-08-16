@@ -40,18 +40,20 @@ import jakarta.validation.constraints.Max;
 public class KVController {
 
     /**
-     * The columns behind the KV fields the API exposes, for the ones whose names differ.
+     * Every field a KV listing can be sorted by, and the column that holds it.
      * <p>
-     * {@code AbstractJdbcRepository#sort} camel-cases the sort property straight into a column
-     * name, with no check that the column exists, so anything missing here reaches SQL as a
-     * column that does not exist and fails the request rather than only the ordering.
-     * {@code expirationDate}, {@code namespace} and {@code description} are absent because they
-     * already match their columns once camel-cased.
+     * Read with {@link Map#get}, so an unknown field yields {@code null} and
+     * {@code PageableUtils.sort} answers 422 rather than letting it through: the property is
+     * otherwise camel-cased straight into a column name with no check that the column exists,
+     * which fails the whole listing with a SQL error instead of just the ordering.
      */
     private static final Map<String, String> SORT_COLUMNS = Map.of(
         "key", "name",
+        "namespace", "namespace",
+        "description", "description",
         "updateDate", "updated",
         "creationDate", "created",
+        "expirationDate", "expiration_date",
         "revision", "version"
     );
 
@@ -62,7 +64,7 @@ public class KVController {
     protected TenantService tenantService;
 
     private String sortMapper(String key) {
-        return key == null ? null : SORT_COLUMNS.getOrDefault(key, key);
+        return key == null ? null : SORT_COLUMNS.get(key);
     }
 
     @ExecuteOn(TaskExecutors.IO)
