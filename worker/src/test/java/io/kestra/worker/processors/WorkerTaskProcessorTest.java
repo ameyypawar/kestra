@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.nio.file.Files;
 
 import org.junit.jupiter.api.Test;
 
@@ -17,6 +18,8 @@ import io.kestra.core.models.executions.TaskRun;
 import io.kestra.core.models.flows.Flow;
 import io.kestra.core.models.flows.State;
 import io.kestra.core.models.property.Property;
+import io.kestra.core.models.executions.TaskRunAttempt;
+import io.kestra.plugin.core.flow.WorkingDirectory;
 import io.kestra.core.models.tasks.AssetFailureBehavior;
 import io.kestra.core.models.tasks.ResolvedTask;
 import io.kestra.core.models.tasks.RunnableTask;
@@ -117,6 +120,29 @@ class WorkerTaskProcessorTest {
         assertThat(results)
             .as("an interrupted task's failure must be deferred for resubmission, not reported")
             .noneMatch(result -> result.getTaskRun().getState().isFailed());
+    }
+
+    @Test
+    void shouldWriteOutputFilesBeforeReleasingTheResultThatEndsTheWorkingDirectory() throws Exception {
+        // Given a WorkingDirectory with outputFiles, whose single child writes the file it captures
+        List<String> events = new CopyOnWriteArrayList<>();
+        RecordingQueue resultQueue = new RecordingQueue(events);
+        WorkerTaskProcessor processor = newProcessor(resultQueue);
+
+        // When it runs
+        processor.process(workingDirectoryWorkerTask(events));
+
+        // Then postExecuteTasks - which writes the `outputs.ion` the Executor reads the WorkingDirectory's
+        // outputs from - happens BEFORE the child result that tells the Executor the flowable is over.
+        // Emitting that result first lets the Executor terminate the WorkingDirectory and read outputs
+        // that are not on storage yet, dropping outputFiles (#13134).
+        int postExecute = events.indexOf(POST_EXECUTE_TASKS);
+        int lastResult = events.lastIndexOf(events.stream().filter(e -> e.startsWith("result:")).reduce((a, b) -> b).orElse("none"));
+
+        assertThat(postExecute).as("postExecuteTasks must have run").isNotNegative();
+        assertThat(lastResult)
+            .as("the result ending the WorkingDirectory must be released only once outputs.ion is written")
+            .isGreaterThan(postExecute);
     }
 
     @Test
@@ -359,6 +385,85 @@ class WorkerTaskProcessorTest {
         public VoidOutput run(RunContext runContext) {
             // null, not new VoidOutput(): the empty bean has no properties and Jackson's
             // FAIL_ON_EMPTY_BEANS would blow up when the processor serializes the output to a map
+            return null;
+        }
+    }
+
+    private static final String POST_EXECUTE_TASKS = "postExecuteTasks";
+
+    private WorkerTask workingDirectoryWorkerTask(List<String> events) {
+        WritesOutputFile child = WritesOutputFile.builder()
+            .type(WritesOutputFile.class.getName())
+            .id("child")
+            .build();
+
+        RecordingWorkingDirectory wdir = RecordingWorkingDirectory.builder()
+            .type(RecordingWorkingDirectory.class.getName())
+            .id("wdir")
+            .tasks(List.of(child))
+            .build();
+        wdir.events = events;
+
+        Flow flow = Flow.builder()
+            .id(IdUtils.create())
+            .namespace("io.kestra.unit-test")
+            .tasks(List.of(wdir))
+            .build();
+
+        Execution execution = TestsUtils.mockExecution(flow, Map.of());
+
+        return WorkerTask.builder()
+            .data(WorkerTaskData.from(runContextFactory.of(Map.of("key", "value"))))
+            .task(wdir)
+            .taskRun(TaskRun.of(execution, ResolvedTask.of(wdir)))
+            .build();
+    }
+
+    /** Records every result put alongside when postExecuteTasks ran, so their order can be asserted. */
+    private static class RecordingQueue extends InMemoryWorkerQueue<WorkerTaskResult> {
+        private final List<String> events;
+
+        RecordingQueue(List<String> events) {
+            super(100);
+            this.events = events;
+        }
+
+        @Override
+        public void put(WorkerTaskResult event) {
+            events.add("result:" + event.getTaskRun().getTaskId() + ":" + event.getTaskRun().getState().getCurrent());
+            super.put(event);
+        }
+    }
+
+    /** A WorkingDirectory that notes when its postExecuteTasks completed. */
+    @SuperBuilder
+    @Getter
+    @NoArgsConstructor
+    public static class RecordingWorkingDirectory extends WorkingDirectory {
+        private transient List<String> events;
+
+        @Override
+        public void postExecuteTasks(RunContext runContext, TaskRun taskRun) throws Exception {
+            try {
+                super.postExecuteTasks(runContext, taskRun);
+            } finally {
+                // the marker goes down whether the capture succeeded or not: this test is about when
+                // postExecuteTasks runs relative to the result that ends the WorkingDirectory
+                if (events != null) {
+                    events.add(POST_EXECUTE_TASKS);
+                }
+            }
+        }
+    }
+
+    /** Writes the file the enclosing WorkingDirectory captures as an output file. */
+    @SuperBuilder
+    @Getter
+    @NoArgsConstructor
+    public static class WritesOutputFile extends Task implements RunnableTask<VoidOutput> {
+        @Override
+        public VoidOutput run(RunContext runContext) throws Exception {
+            Files.writeString(runContext.workingDir().path().resolve("test.txt"), "Hello World");
             return null;
         }
     }

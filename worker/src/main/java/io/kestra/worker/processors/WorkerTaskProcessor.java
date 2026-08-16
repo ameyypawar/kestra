@@ -13,6 +13,8 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -110,6 +112,9 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
         DefaultRunContext runContext = runContextInitializer.forWorkingDirectory(workerTask);
         final RunContext workingDirectoryRunContext = runContext.clone();
 
+        // Holds back the result of the WorkingDirectory's last child - see the loop below.
+        AtomicReference<WorkerTaskResult> pending = new AtomicReference<>();
+
         try {
             // preExecuteTasks
             try {
@@ -121,11 +126,18 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
                 return;
             }
 
+            // The result of the last child is what tells the Executor this WorkingDirectory is over: it
+            // resolves the flowable's terminal state and reads its outputs right then. postExecuteTasks,
+            // which writes the `outputs.ion` those outputs are read from, only runs once every child is
+            // done - so the last child's result is held back until then, or the Executor races the file
+            // and terminates the WorkingDirectory with no outputFiles (#13134).
             // execute all tasks
             for (Task currentTask : workingDirectory.getTasks()) {
                 if (Boolean.TRUE.equals(currentTask.getDisabled())) {
                     continue;
                 }
+                // this child is not the last one after all: its result can go out now
+                emitPending(pending);
                 WorkerTask currentWorkerTask = workingDirectory.workerTask(
                     workerTask.getTaskRun(),
                     currentTask,
@@ -141,11 +153,12 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
                                 .withState(SKIPPED)
                                 .addAttempt(TaskRunAttempt.builder().workerId(workerId).state(new State().withState(SKIPPED)).build())
                         );
-                        workerTaskResultQueue.put(workerTaskResult);
+                        pending.set(workerTaskResult);
                     } else {
                         workerTaskResult = this.runTask(
                             currentWorkerTask, false,
-                            runContextInitializer.forWorkingDirectorySubtask(currentWorkerTask, runContext.workingDir())
+                            runContextInitializer.forWorkingDirectorySubtask(currentWorkerTask, runContext.workingDir()),
+                            pending::set
                         );
                     }
                 } catch (IllegalVariableEvaluationException e) {
@@ -171,15 +184,37 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
             }
             this.logTerminated(workerTask, workerTask.getTaskRun());
         } finally {
+            // Always release the held-back result, even if the loop or postExecuteTasks threw: it is a
+            // taskrun's terminal state, and dropping it leaves the execution RUNNING forever. By here
+            // `outputs.ion` is written whenever it was going to be, so the Executor reads a complete
+            // WorkingDirectory.
+            emitPending(pending);
             runContext.cleanup();
         }
     }
 
+    /** Emits the result held back for the WorkingDirectory's last child, if there is one. */
+    private void emitPending(AtomicReference<WorkerTaskResult> pending) {
+        WorkerTaskResult held = pending.getAndSet(null);
+        if (held != null) {
+            workerTaskResultQueue.put(held);
+        }
+    }
+
     private WorkerTaskResult runTask(WorkerTask workerTask, boolean cleanUp) {
-        return runTask(workerTask, cleanUp, null);
+        return runTask(workerTask, cleanUp, null, workerTaskResultQueue::put);
     }
 
     private WorkerTaskResult runTask(WorkerTask workerTask, boolean cleanUp, DefaultRunContext providedRunContext) {
+        return runTask(workerTask, cleanUp, providedRunContext, workerTaskResultQueue::put);
+    }
+
+    /**
+     * @param resultSink where the task's terminal result goes. Defaults to the result queue; a
+     *                   WorkingDirectory passes its own so it can hold back the result of its last
+     *                   child until `outputs.ion` has been written.
+     */
+    private WorkerTaskResult runTask(WorkerTask workerTask, boolean cleanUp, DefaultRunContext providedRunContext, Consumer<WorkerTaskResult> resultSink) {
         String[] metricTags = metricRegistry.tags(workerTask, workerGroup);
 
         this.metricRegistry
@@ -204,7 +239,7 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
                     && executionKilledManager.isExecutionKilled(workerTask.getTaskRun().getExecutionId())
             ) {
                 WorkerTaskResult workerTaskResult = new WorkerTaskResult(workerTask.getTaskRun().withState(State.Type.KILLED));
-                workerTaskResultQueue.put(workerTaskResult);
+                resultSink.accept(workerTaskResult);
                 // We cannot remove the execution ID from the killed cache in case the worker is processing
                 // multiple tasks of the execution which can happen due to parallel processing.
                 return workerTaskResult;
@@ -242,7 +277,7 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
                                     List<TaskRunAttempt> attempts = this.addAttempt(workerTask, attempt);
                                     TaskRun taskRun = workerTask.getTaskRun().withAttempts(attempts).withState(SUCCESS);
                                     WorkerTaskResult workerTaskResult = new WorkerTaskResult(taskRun, outputMap);
-                                    workerTaskResultQueue.put(workerTaskResult);
+                                    resultSink.accept(workerTaskResult);
                                     return workerTaskResult;
                                 }
                             }
@@ -332,7 +367,7 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
             TaskRun taskRun = taskRunWithOutput.taskRun().withState(state);
 
             WorkerTaskResult workerTaskResult = new WorkerTaskResult(taskRun, dynamicTaskRuns, taskRunWithOutput.outputs());
-            workerTaskResultQueue.put(workerTaskResult);
+            resultSink.accept(workerTaskResult);
 
             // upload the cache file, hash may not be present if we didn't succeed in computing it
             if (
