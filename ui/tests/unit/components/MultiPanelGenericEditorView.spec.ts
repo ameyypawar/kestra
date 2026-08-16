@@ -10,8 +10,10 @@ vi.mock("vue-router", () => ({
     useRouter: () => ({replace: vi.fn(), push: vi.fn()}),
 }))
 
+// `layout` is declared so the orientation the editor panels receive can be read
+// back — the toggle used to set a value that never reached them.
 vi.mock("../../../src/components/MultiPanelTabs.vue", () => ({
-    default: {template: "<div />", props: ["modelValue"]},
+    default: {name: "MultiPanelTabs", template: "<div />", props: ["modelValue", "layout"]},
 }))
 
 vi.mock("../../../src/components/MultiPanelEditorTabs.vue", () => ({
@@ -38,6 +40,8 @@ const editorElements = [
     },
 ]
 
+const STORAGE_KEY = "editor-panels-orientation"
+
 function mountEditor() {
     return mount(MultiPanelGenericEditorView, {
         global: globalConfig,
@@ -46,6 +50,10 @@ function mountEditor() {
             defaultActiveTabs: ["code"],
         },
     })
+}
+
+function panelsOrientation(wrapper: ReturnType<typeof mountEditor>) {
+    return wrapper.findComponent({name: "MultiPanelTabs"}).props("layout")
 }
 
 describe("MultiPanelGenericEditorView split orientation", () => {
@@ -58,13 +66,13 @@ describe("MultiPanelGenericEditorView split orientation", () => {
         localStorage.clear()
     })
 
-    test("defaults to vertical orientation", () => {
+    test("defaults to the panels sitting side by side", () => {
         // Given: no stored preference
         // When: component mounts
         const wrapper = mountEditor()
 
-        // Then: splitOrientation is "vertical"
-        expect((wrapper.vm as any).splitOrientation).toBe("vertical")
+        // Then: horizontal, which is how the editor has always opened
+        expect((wrapper.vm as any).splitOrientation).toBe("horizontal")
     })
 
     test("toggle button exists with accessible aria-label", () => {
@@ -79,43 +87,77 @@ describe("MultiPanelGenericEditorView split orientation", () => {
         expect(btn.attributes("aria-label")).toBeTruthy()
     })
 
-    test("toggles orientation to horizontal when button is clicked", async () => {
-        // Given: default vertical orientation
+    test("hands the orientation to the editor panels", () => {
+        // Given: the component is mounted
         const wrapper = mountEditor()
-        expect((wrapper.vm as any).splitOrientation).toBe("vertical")
+
+        // Then: MultiPanelTabs is told how to lay its panels out. Without this the
+        // toggle drives the outer splitter, which usually has a single panel and
+        // so ignores it entirely.
+        expect(panelsOrientation(wrapper)).toBe("horizontal")
+    })
+
+    test("the editor panels follow the toggle", async () => {
+        // Given: the component is mounted side by side
+        const wrapper = mountEditor()
+        expect(panelsOrientation(wrapper)).toBe("horizontal")
 
         // When: the toggle button is clicked
         await wrapper.find(".orientation-toggle").trigger("click")
 
-        // Then: orientation switches to horizontal
+        // Then: the panels are told to stack
+        expect(panelsOrientation(wrapper)).toBe("vertical")
+    })
+
+    test("toggles orientation to vertical when button is clicked", async () => {
+        // Given: default horizontal orientation
+        const wrapper = mountEditor()
         expect((wrapper.vm as any).splitOrientation).toBe("horizontal")
+
+        // When: the toggle button is clicked
+        await wrapper.find(".orientation-toggle").trigger("click")
+
+        // Then: orientation switches to vertical
+        expect((wrapper.vm as any).splitOrientation).toBe("vertical")
     })
 
     test("persists orientation toggle to localStorage", async () => {
-        // Given: default vertical orientation
+        // Given: default horizontal orientation
         const wrapper = mountEditor()
 
         // When: the toggle button is clicked
         await wrapper.find(".orientation-toggle").trigger("click")
 
         // Then: the preference is saved in localStorage (VueUse useStorage stores string values unquoted)
-        const stored = localStorage.getItem("editor-split-orientation")
-        expect(stored === "\"horizontal\"" || stored === "horizontal").toBe(true)
+        const stored = localStorage.getItem(STORAGE_KEY)
+        expect(stored === "\"vertical\"" || stored === "vertical").toBe(true)
     })
 
     test("reads persisted orientation on mount", () => {
-        // Given: a horizontal orientation stored in localStorage (try both forms VueUse may read)
-        localStorage.setItem("editor-split-orientation", "horizontal")
+        // Given: a vertical orientation stored in localStorage (try both forms VueUse may read)
+        localStorage.setItem(STORAGE_KEY, "vertical")
 
         // When: component mounts
         const wrapper = mountEditor()
 
-        // Then: splitOrientation starts as horizontal
-        expect((wrapper.vm as any).splitOrientation).toBe("horizontal")
+        // Then: both the state and the panels start stacked
+        expect((wrapper.vm as any).splitOrientation).toBe("vertical")
+        expect(panelsOrientation(wrapper)).toBe("vertical")
     })
 
-    test("toggles back to vertical after two clicks", async () => {
-        // Given: default vertical orientation
+    test("ignores a value left behind by the old outer-splitter setting", () => {
+        // Given: the previous key, whose "vertical" meant the playground sat below
+        localStorage.setItem("editor-split-orientation", "vertical")
+
+        // When: component mounts
+        const wrapper = mountEditor()
+
+        // Then: the panels are not silently stacked on upgrade
+        expect(panelsOrientation(wrapper)).toBe("horizontal")
+    })
+
+    test("toggles back to horizontal after two clicks", async () => {
+        // Given: default horizontal orientation
         const wrapper = mountEditor()
         const btn = wrapper.find(".orientation-toggle")
 
@@ -123,7 +165,8 @@ describe("MultiPanelGenericEditorView split orientation", () => {
         await btn.trigger("click")
         await btn.trigger("click")
 
-        // Then: back to vertical
-        expect((wrapper.vm as any).splitOrientation).toBe("vertical")
+        // Then: back to horizontal
+        expect((wrapper.vm as any).splitOrientation).toBe("horizontal")
+        expect(panelsOrientation(wrapper)).toBe("horizontal")
     })
 })
