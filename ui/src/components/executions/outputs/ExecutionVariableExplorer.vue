@@ -59,17 +59,22 @@
                                 />
                             </div>
 
-                            <pre v-else-if="multilineText !== undefined" class="viewer__text">{{ multilineText }}</pre>
+                            <!-- Structure keeps the tree; a multi-line leaf is shown underneath it,
+                                 in the space a short tree leaves empty, so picking a stack trace
+                                 never costs the user the other keys. -->
+                            <template v-else-if="isExpandableValue">
+                                <KsJsonTree
+                                    :value="selectedValue"
+                                    :basePath="selectedBase"
+                                    :selectedPath="expressionPath"
+                                    :previewFormatter="treePreviewFormatter"
+                                    defaultExpanded
+                                    @select="onSelectPath"
+                                />
+                                <pre v-if="multilineText !== undefined" class="viewer__text viewer__text--under-tree">{{ multilineText }}</pre>
+                            </template>
 
-                            <KsJsonTree
-                                v-else-if="isExpandableValue"
-                                :value="selectedValue"
-                                :basePath="selectedBase"
-                                :selectedPath="expressionPath"
-                                :previewFormatter="treePreviewFormatter"
-                                defaultExpanded
-                                @select="onSelectPath"
-                            />
+                            <pre v-else-if="multilineText !== undefined" class="viewer__text">{{ multilineText }}</pre>
 
                             <div v-else class="viewer__scalar">
                                 <code>{{ rawValue }}</code>
@@ -536,6 +541,10 @@
         font-size: var(--ks-font-size-sm);
         white-space: pre-wrap;
         word-break: break-word;
+    }
+
+    &__text--under-tree {
+        border-top: 1px solid var(--ks-border-default);
     }
 
     .file-preview {
