@@ -130,9 +130,9 @@
             .replace(/\?$/, ""),
     )
 
-    const bookmarked = computed(() =>
-        bookmarksStore.pages.some((page) => page.path === currentFavURI.value),
-    )
+    // Matched on the page rather than the exact query, so a bookmark stays
+    // recognised when filters change underneath it (#17889).
+    const bookmarked = computed(() => bookmarksStore.isBookmarked(currentFavURI.value))
 
     const onStarClick = () => {
         if (bookmarked.value) {
