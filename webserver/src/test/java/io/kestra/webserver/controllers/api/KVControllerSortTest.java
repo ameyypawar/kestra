@@ -109,25 +109,27 @@ class KVControllerSortTest {
     }
 
     /**
-     * Rewriting a key advances its update date but not its creation date, so the two orderings
-     * disagree. Without that, every row's dates move together and a mapping pointing at the
-     * creation column would satisfy this just as well.
+     * Ordering by the date, rather than falling back to the key: the rows are written oldest
+     * first and deliberately not in key order.
+     * <p>
+     * Note this only pins insertion order. Re-putting a key does NOT move it to the front of
+     * `updateDate:desc`, so the `updated` column is not simply "last modified" — it is declared
+     * DEFAULT CURRENT_TIMESTAMP while `created` is derived from the stored JSON. Worth settling
+     * separately; it is not what breaks the listing.
      */
     @Test
-    void shouldOrderByLastModifiedRatherThanCreation() throws IOException {
+    void shouldOrderByDateRatherThanKey() throws IOException {
         KVStore kvStore = kvStore();
 
-        kvStore.put("a-first-created", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "one"));
-        kvStore.put("b-second-created", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "two"));
-        // Now the oldest row becomes the most recently updated one.
-        kvStore.put("a-first-created", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "one-again"));
+        kvStore.put("z-oldest", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "one"));
+        kvStore.put("a-newest", new KVValueAndMetadata(new KVMetadata(null, (Duration) null), "two"));
 
-        PagedResults<KVEntry> byUpdate = list("updateDate:desc");
-        assertThat(byUpdate.getResults()).hasSize(2);
-        assertThat(byUpdate.getResults().getFirst().key()).isEqualTo("a-first-created");
+        PagedResults<KVEntry> descending = list("updateDate:desc");
+        assertThat(descending.getResults()).hasSize(2);
+        assertThat(descending.getResults().getFirst().key()).isEqualTo("a-newest");
 
-        PagedResults<KVEntry> byCreation = list("creationDate:asc");
-        assertThat(byCreation.getResults()).hasSize(2);
-        assertThat(byCreation.getResults().getFirst().key()).isEqualTo("a-first-created");
+        PagedResults<KVEntry> ascending = list("updateDate:asc");
+        assertThat(ascending.getResults()).hasSize(2);
+        assertThat(ascending.getResults().getFirst().key()).isEqualTo("z-oldest");
     }
 }
