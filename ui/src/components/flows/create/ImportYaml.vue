@@ -130,14 +130,15 @@
 </script>
 
 <style scoped lang="scss">
+    /* No max-width: this step hands off to the flow editor, which is full width,
+       so pasted YAML should not be read through a narrower column than the one it
+       lands in. The page padding keeps it off the edges. */
     .import-yaml {
         display: flex;
         flex-direction: column;
         gap: var(--ks-spacing-4);
         padding: var(--ks-spacing-6) var(--ks-spacing-4);
         width: 100%;
-        max-width: 48rem;
-        margin: 0 auto;
     }
 
     .import-header {
