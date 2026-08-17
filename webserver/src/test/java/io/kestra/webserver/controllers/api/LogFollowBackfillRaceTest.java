@@ -3,6 +3,8 @@ package io.kestra.webserver.controllers.api;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 import org.slf4j.event.Level;
@@ -41,6 +43,9 @@ class LogFollowBackfillRaceTest {
     private static final String HISTORICAL = "historical line";
     private static final String DURING_READ = "published while the read was streaming";
 
+    /** Counted down by a probe subscriber once the mid-read event has actually been dispatched. */
+    private final CountDownLatch dispatched = new CountDownLatch(1);
+
     @Inject
     private LogController logController;
 
@@ -75,8 +80,12 @@ class LogFollowBackfillRaceTest {
                 .doOnNext(ignored -> {
                     try {
                         logQueue.emit(followEvent(DURING_READ));
-                        // let the broadcast dispatch land while the read is still in flight
-                        Thread.sleep(500);
+                        // Block until the probe below confirms the queue has dispatched it. Sleeping a
+                        // fixed time instead would race the consumer's poll interval: too short and the
+                        // event lands after registerSubscriber, so the old ordering passes too.
+                        if (!dispatched.await(30, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("event was never dispatched by the queue");
+                        }
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     } catch (Exception e) {
@@ -91,13 +100,18 @@ class LogFollowBackfillRaceTest {
     void shouldNotLoseALogPublishedWhileTheHistoryIsBeingRead() {
         when(tenantService.resolveTenant()).thenReturn("main");
 
-        // A second follower on another execution keeps the queue consumer polling. Without it the
-        // consumer is paused for the whole read and the backlog is simply replayed on resume, so the
-        // gap never opens and the test cannot tell the orderings apart.
-        String keepAliveId = IdUtils.create();
+        // A probe subscriber on the same execution, registered first. It does two jobs: it keeps the
+        // queue consumer polling (paused, the consumer would sleep through the whole read and simply
+        // replay the backlog on resume, so no gap would open), and it tells the read above exactly when
+        // the mid-read event has been dispatched — making the window deterministic instead of timed.
+        String probeId = IdUtils.create();
         Flux.<Event<FollowLogEvent>> create(
-            sink -> logStreamingService.registerSubscriber("keep-consumer-running", keepAliveId, sink, List.of())
-        ).subscribe(event -> { });
+            sink -> logStreamingService.registerSubscriber(EXECUTION_ID, probeId, sink, List.of())
+        ).subscribe(event -> {
+            if (DURING_READ.equals(event.getData().message())) {
+                dispatched.countDown();
+            }
+        });
 
         try {
 
@@ -117,7 +131,7 @@ class LogFollowBackfillRaceTest {
             .as("a log published between subscribing and the end of the history read must still reach the client (#10521)")
             .contains(HISTORICAL, DURING_READ);
         } finally {
-            logStreamingService.unregisterSubscriber("keep-consumer-running", keepAliveId);
+            logStreamingService.unregisterSubscriber(EXECUTION_ID, probeId);
         }
     }
 

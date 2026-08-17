@@ -192,31 +192,45 @@ public class LogStreamingService {
             this.buffer = buffer;
         }
 
-        /** Buffer the event while replaying, otherwise emit it. */
+        /**
+         * Buffer the event while replaying, otherwise emit it. The lock is released before delivering:
+         * this runs on the single queue-dispatch thread shared by every subscriber, so blocking a slow
+         * SSE client's write while holding it would stall the fanout to everyone else.
+         */
         private void accept(FollowLogEvent event, String subscriberId) {
             synchronized (lock) {
                 if (buffer != null) {
                     buffer.add(event);
                     return;
                 }
-                deliver(event, subscriberId, sink, filters);
             }
+            deliver(event, subscriberId, sink, filters);
         }
 
-        /** Emit everything held, then switch to live delivery. */
+        /**
+         * Emit everything held, then switch to live delivery.
+         * <p>
+         * Drains one event at a time, holding the lock only to take it and, once the queue is empty, to
+         * flip to live delivery. So the lock is never held across a delivery, and live delivery only
+         * begins once nothing is left buffered — an event dispatched mid-drain is appended and drained by
+         * this same loop rather than overtaking what was buffered before it.
+         */
         private void release(String subscriberId, Set<FollowLogEvent> alreadyDelivered) {
-            synchronized (lock) {
-                if (buffer == null) {
-                    return;
-                }
+            while (true) {
                 FollowLogEvent held;
-                while ((held = buffer.poll()) != null) {
-                    if (alreadyDelivered != null && alreadyDelivered.contains(held)) {
-                        continue;
+                synchronized (lock) {
+                    if (buffer == null) {
+                        return;
                     }
+                    held = buffer.poll();
+                    if (held == null) {
+                        buffer = null;
+                        return;
+                    }
+                }
+                if (alreadyDelivered == null || !alreadyDelivered.contains(held)) {
                     deliver(held, subscriberId, sink, filters);
                 }
-                buffer = null;
             }
         }
     }
