@@ -156,6 +156,18 @@ class FlowValidationTest {
     }
 
     @Test
+    void bareSystemLabelShouldFailValidation() {
+        // `system` is reserved on its own, not only as a prefix: flow labels reach expressions through
+        // Label.toNestedMap, which nests on '.', so it collides with the system.* labels every execution
+        // already carries (#8089). This goes through FlowValidator, not the @NoSystemLabelValidation path.
+        Flow flow = this.parse("flows/invalids/bare-system-label.yaml");
+        Optional<ConstraintViolationException> validate = modelValidator.isValid(flow);
+
+        assertThat(validate.isPresent()).isTrue();
+        assertThat(validate.get().getMessage()).contains("System labels can only be set by Kestra itself, offending label: system=mine");
+    }
+
+    @Test
     void inputUsageWithSubtractionSymbolFailValidation() {
         Flow flow = this.parse("flows/invalids/inputs-key-with-subtraction-symbol-validation.yaml");
         Optional<ConstraintViolationException> validate = modelValidator.isValid(flow);

@@ -29,7 +29,6 @@ import lombok.NoArgsConstructor;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
 
-import static io.kestra.core.models.Label.SYSTEM_PREFIX;
 import static io.kestra.core.utils.Rethrow.throwFunction;
 
 @SuperBuilder
@@ -139,7 +138,7 @@ public class Labels extends Task implements ExecutionUpdatableTask {
 
         // check for system labels: none can be passed at runtime
         Optional<Map.Entry<String, String>> systemLabel = labelsAsMap.entrySet().stream()
-            .filter(entry -> entry.getKey().startsWith(SYSTEM_PREFIX))
+            .filter(entry -> Label.isSystem(entry.getKey()))
             .findFirst();
         if (systemLabel.isPresent()) {
             throw new IllegalArgumentException(

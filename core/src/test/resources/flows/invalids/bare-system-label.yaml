@@ -1,0 +1,10 @@
+id: bare-system-label
+namespace: io.kestra.tests
+
+labels:
+  system: mine
+
+tasks:
+  - id: hello
+    type: io.kestra.plugin.core.log.Log
+    message: Hello World!
