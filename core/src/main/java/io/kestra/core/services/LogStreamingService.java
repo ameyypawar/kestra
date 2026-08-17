@@ -81,16 +81,7 @@ public class LogStreamingService {
             Map<String, Subscriber> executionSubscribers = subscribers.get(current.executionId());
 
             if (executionSubscribers != null && !executionSubscribers.isEmpty()) {
-                executionSubscribers.forEach((subscriberId, subscriber) -> {
-                    // A subscriber still replaying history buffers instead of emitting, so live events
-                    // neither overtake the backfill nor get lost while it runs.
-                    Queue<FollowLogEvent> buffer = subscriber.buffer;
-                    if (buffer != null) {
-                        buffer.add(current);
-                        return;
-                    }
-                    deliver(current, subscriberId, subscriber.sink, subscriber.filters);
-                });
+                executionSubscribers.forEach((subscriberId, subscriber) -> subscriber.accept(current, subscriberId));
             }
         } catch (Exception e) {
             log.error("Unable to dispatch the log event to its subscribers", e);
@@ -169,42 +160,64 @@ public class LogStreamingService {
      * its own read — the buffering window overlaps that read, so the same event can appear in both.
      */
     public void streamBufferedSubscriber(String executionId, String subscriberId, Set<FollowLogEvent> alreadyDelivered) {
+        // Look the subscriber up under the global lock, then release it before taking the subscriber's own:
+        // dispatch takes the subscriber lock first and may then take the global one (delivery failure
+        // unregisters), so acquiring them in that order here too would be a lock cycle.
         Subscriber subscriber;
         synchronized (subscriberLock) {
             subscriber = subscribers.getOrDefault(executionId, Map.of()).get(subscriberId);
-            if (subscriber == null || subscriber.buffer == null) {
-                return;
-            }
         }
-
-        // Drain before clearing the buffer reference so an event arriving mid-drain is still captured;
-        // the last poll after the switch covers the small window between the two.
-        Queue<FollowLogEvent> buffer = subscriber.buffer;
-        drain(buffer, subscriber, subscriberId, executionId, alreadyDelivered);
-        subscriber.buffer = null;
-        drain(buffer, subscriber, subscriberId, executionId, alreadyDelivered);
-    }
-
-    private void drain(Queue<FollowLogEvent> buffer, Subscriber subscriber, String subscriberId, String executionId, Set<FollowLogEvent> alreadyDelivered) {
-        FollowLogEvent buffered;
-        while ((buffered = buffer.poll()) != null) {
-            if (alreadyDelivered != null && alreadyDelivered.contains(buffered)) {
-                continue;
-            }
-            deliver(buffered, subscriberId, subscriber.sink, subscriber.filters);
+        if (subscriber != null) {
+            subscriber.release(subscriberId, alreadyDelivered);
         }
     }
 
-    /** A registered SSE subscriber; {@code buffer} is non-null only while it is replaying history. */
-    private static final class Subscriber {
+    /**
+     * A registered SSE subscriber.
+     * <p>
+     * While it is replaying history its {@code buffer} is non-null and every dispatched event is held
+     * there instead of being emitted. Holding and releasing happen under the same lock, so an event is
+     * either buffered before the release or emitted after it — never dropped between the two, and never
+     * emitted ahead of an event that was buffered earlier.
+     */
+    private final class Subscriber {
         private final FluxSink<Event<FollowLogEvent>> sink;
         private final List<QueryFilter> filters;
-        private volatile Queue<FollowLogEvent> buffer;
+        private final Object lock = new Object();
+        private Queue<FollowLogEvent> buffer;
 
         private Subscriber(FluxSink<Event<FollowLogEvent>> sink, List<QueryFilter> filters, Queue<FollowLogEvent> buffer) {
             this.sink = sink;
             this.filters = filters;
             this.buffer = buffer;
+        }
+
+        /** Buffer the event while replaying, otherwise emit it. */
+        private void accept(FollowLogEvent event, String subscriberId) {
+            synchronized (lock) {
+                if (buffer != null) {
+                    buffer.add(event);
+                    return;
+                }
+                deliver(event, subscriberId, sink, filters);
+            }
+        }
+
+        /** Emit everything held, then switch to live delivery. */
+        private void release(String subscriberId, Set<FollowLogEvent> alreadyDelivered) {
+            synchronized (lock) {
+                if (buffer == null) {
+                    return;
+                }
+                FollowLogEvent held;
+                while ((held = buffer.poll()) != null) {
+                    if (alreadyDelivered != null && alreadyDelivered.contains(held)) {
+                        continue;
+                    }
+                    deliver(held, subscriberId, sink, filters);
+                }
+                buffer = null;
+            }
         }
     }
 

@@ -161,16 +161,19 @@ public class LogController {
             // Then replay what is already persisted, remembering it so the buffer does not repeat an entry
             // the read has already emitted — the two overlap by exactly the width of that window.
             Set<FollowLogEvent> replayed = new HashSet<>();
-            logRepository.findAsync(tenantService.resolveTenant(), effectiveFilters)
-                .toStream()
-                .forEach(logEntry -> {
-                    FollowLogEvent event = FollowLogEvent.from(logEntry);
-                    replayed.add(event);
-                    emitter.next(Event.of(event).id("progress"));
-                });
-
-            // History is out, release the buffer and let the subscriber stream live
-            logStreamingService.streamBufferedSubscriber(executionId, subscriberId, replayed);
+            try {
+                logRepository.findAsync(tenantService.resolveTenant(), effectiveFilters)
+                    .toStream()
+                    .forEach(logEntry -> {
+                        FollowLogEvent event = FollowLogEvent.from(logEntry);
+                        replayed.add(event);
+                        emitter.next(Event.of(event).id("progress"));
+                    });
+            } finally {
+                // Release even if the read failed: a subscriber left buffering emits nothing at all,
+                // which would be a worse outcome than the incomplete history a failed read gives.
+                logStreamingService.streamBufferedSubscriber(executionId, subscriberId, replayed);
+            }
         }, FluxSink.OverflowStrategy.BUFFER)
             .timeout(Duration.ofHours(1)); // avoid idle SSE sockets by setting a between-item timeout
 

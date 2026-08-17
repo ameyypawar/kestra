@@ -13,6 +13,7 @@ import io.kestra.core.queues.BroadcastQueueInterface;
 import io.kestra.core.repositories.LogDataStoreInterface;
 import io.kestra.core.runners.FollowLogEvent;
 import io.kestra.core.tenant.TenantService;
+import io.kestra.core.services.LogStreamingService;
 import io.kestra.core.utils.IdUtils;
 import io.kestra.webserver.tenants.TenantValidationFilter;
 
@@ -45,6 +46,9 @@ class LogFollowBackfillRaceTest {
 
     @Inject
     private BroadcastQueueInterface<FollowLogEvent> logQueue;
+
+    @Inject
+    private LogStreamingService logStreamingService;
 
     @Inject
     private TenantService tenantService;
@@ -87,6 +91,16 @@ class LogFollowBackfillRaceTest {
     void shouldNotLoseALogPublishedWhileTheHistoryIsBeingRead() {
         when(tenantService.resolveTenant()).thenReturn("main");
 
+        // A second follower on another execution keeps the queue consumer polling. Without it the
+        // consumer is paused for the whole read and the backlog is simply replayed on resume, so the
+        // gap never opens and the test cannot tell the orderings apart.
+        String keepAliveId = IdUtils.create();
+        Flux.<Event<FollowLogEvent>> create(
+            sink -> logStreamingService.registerSubscriber("keep-consumer-running", keepAliveId, sink, List.of())
+        ).subscribe(event -> { });
+
+        try {
+
         List<Event<FollowLogEvent>> received = logController
             .followLogsFromExecution(EXECUTION_ID, List.of())
             .take(Duration.ofSeconds(10))
@@ -102,6 +116,9 @@ class LogFollowBackfillRaceTest {
         assertThat(messages)
             .as("a log published between subscribing and the end of the history read must still reach the client (#10521)")
             .contains(HISTORICAL, DURING_READ);
+        } finally {
+            logStreamingService.unregisterSubscriber("keep-consumer-running", keepAliveId);
+        }
     }
 
     private static LogEntry logEntry(String message) {
