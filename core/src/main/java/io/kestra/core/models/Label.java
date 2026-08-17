@@ -18,7 +18,21 @@ public record Label(
         message = "Invalid label key. A valid key contains only lowercase letters numbers hyphens (-) underscores (_) or periods (.) and must begin with a lowercase letter."
     ) String key,
     @NotEmpty String value) {
-    public static final String SYSTEM_PREFIX = "system.";
+    /** The root Kestra reserves for its own labels. Reserved on its own, not only as a prefix. */
+    public static final String SYSTEM = "system";
+
+    public static final String SYSTEM_PREFIX = SYSTEM + ".";
+
+    /**
+     * Whether the key belongs to Kestra rather than the user: {@value #SYSTEM} itself, or anything under it.
+     * <p>
+     * The bare key matters as much as the prefix. Labels are exposed to expressions through
+     * {@link #toNestedMap(List)}, which nests on `.`, so a user label named {@value #SYSTEM} collides with
+     * every {@code system.*} label the execution already carries.
+     */
+    public static boolean isSystem(@Nullable String key) {
+        return key != null && (key.equals(SYSTEM) || key.startsWith(SYSTEM_PREFIX));
+    }
 
     // system labels
     public static final String CORRELATION_ID = SYSTEM_PREFIX + "correlationId";

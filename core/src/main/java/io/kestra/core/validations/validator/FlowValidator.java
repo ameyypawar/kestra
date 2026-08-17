@@ -27,7 +27,8 @@ import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 
 import static io.kestra.core.models.Label.READ_ONLY;
-import static io.kestra.core.models.Label.SYSTEM_PREFIX;
+import io.kestra.core.models.Label;
+
 
 @Singleton
 public class FlowValidator implements ConstraintValidator<FlowValidation, Flow> {
@@ -115,7 +116,7 @@ public class FlowValidator implements ConstraintValidator<FlowValidation, Flow> 
 
         // system labels
         ListUtils.emptyOnNull(value.getLabels()).stream()
-            .filter(label -> label.key() != null && label.key().startsWith(SYSTEM_PREFIX) && !label.key().equals(READ_ONLY))
+            .filter(label -> Label.isSystem(label.key()) && !label.key().equals(READ_ONLY))
             .forEach(label -> violations.add("System labels can only be set by Kestra itself, offending label: " + label.key() + "=" + label.value()));
 
         List<Pattern> inputsWithMinusPatterns = ListUtils.emptyOnNull(value.getInputs())
