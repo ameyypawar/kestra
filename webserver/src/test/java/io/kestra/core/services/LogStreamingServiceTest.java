@@ -3,10 +3,12 @@ package io.kestra.core.services;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.FieldSource;
 import org.slf4j.event.Level;
@@ -71,6 +73,77 @@ class LogStreamingServiceTest {
         assertThat(received)
             .usingRecursiveFieldByFieldElementComparatorOnFields("executionId", "level", "taskId", "taskRunId", "attemptNumber", "message")
             .containsExactlyInAnyOrderElementsOf(testCase.expectedEvents());
+    }
+
+    @Test
+    void shouldNotLoseAnEventPublishedWhileTheHistoryIsBeingReplayed() {
+        // Given a subscriber registered in buffering mode, standing in for the follow endpoint
+        // between subscribing and finishing its repository read
+        String subscriberId = IdUtils.create();
+        List<FollowLogEvent> received = new CopyOnWriteArrayList<>();
+
+        Flux.<Event<FollowLogEvent>> create(
+            sink -> service.registerBufferedSubscriber(EXECUTION_ID, subscriberId, sink, List.of())
+        )
+            .subscribe(event -> received.add(event.getData()));
+
+        try {
+            // When an event is published during that window
+            FollowLogEvent duringReplay = event(Level.INFO, "load-data", "task-run-1", 0, "logged mid-replay");
+            queue.emit(duringReplay);
+
+            // Then it is held rather than dropped or emitted early
+            Awaitility.await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2))
+                .until(() -> received.isEmpty());
+
+            // And it is delivered once the replay finishes
+            service.streamBufferedSubscriber(EXECUTION_ID, subscriberId, Set.of());
+
+            Awaitility.await().atMost(Duration.ofSeconds(5)).pollInterval(50, TimeUnit.MILLISECONDS)
+                .until(() -> !received.isEmpty());
+            assertThat(received)
+                .as("an event published between subscribing and the end of the replay must still arrive (#10521)")
+                .extracting(FollowLogEvent::message)
+                .containsExactly("logged mid-replay");
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        } finally {
+            service.unregisterSubscriber(EXECUTION_ID, subscriberId);
+        }
+    }
+
+    @Test
+    void shouldNotRepeatAnEventTheReplayAlreadyEmitted() {
+        // Given the same window, but the buffered event is one the caller's own read also returned
+        String subscriberId = IdUtils.create();
+        List<FollowLogEvent> received = new CopyOnWriteArrayList<>();
+
+        Flux.<Event<FollowLogEvent>> create(
+            sink -> service.registerBufferedSubscriber(EXECUTION_ID, subscriberId, sink, List.of())
+        )
+            .subscribe(event -> received.add(event.getData()));
+
+        try {
+            FollowLogEvent alsoPersisted = event(Level.INFO, "load-data", "task-run-1", 0, "already replayed");
+            queue.emit(alsoPersisted);
+
+            Awaitility.await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2))
+                .until(() -> received.isEmpty());
+
+            // When the replay reports having emitted it itself
+            service.streamBufferedSubscriber(EXECUTION_ID, subscriberId, Set.of(alsoPersisted));
+
+            // Then it is not sent a second time
+            Awaitility.await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2))
+                .until(() -> received.isEmpty());
+            assertThat(received)
+                .as("an entry the replay already emitted must not be duplicated by the buffer")
+                .isEmpty();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        } finally {
+            service.unregisterSubscriber(EXECUTION_ID, subscriberId);
+        }
     }
 
     private static final FollowLogEvent traceEvent = event(Level.TRACE, "load-data", "task-run-1", 0, "trace line");

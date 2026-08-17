@@ -2,9 +2,10 @@ package io.kestra.core.services;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
-import org.apache.commons.lang3.tuple.Pair;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import io.kestra.core.exceptions.DeserializationException;
 import io.kestra.core.models.QueryFilter;
@@ -36,7 +37,7 @@ import reactor.core.publisher.FluxSink;
 @Slf4j
 @Singleton
 public class LogStreamingService {
-    private final Map<String, Map<String, Pair<FluxSink<Event<FollowLogEvent>>, List<QueryFilter>>>> subscribers = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, Subscriber>> subscribers = new ConcurrentHashMap<>();
     private final Object subscriberLock = new Object();
 
     @Inject
@@ -77,10 +78,19 @@ public class LogStreamingService {
             }
 
             // Get all subscribers for this execution
-            Map<String, Pair<FluxSink<Event<FollowLogEvent>>, List<QueryFilter>>> executionSubscribers = subscribers.get(current.executionId());
+            Map<String, Subscriber> executionSubscribers = subscribers.get(current.executionId());
 
             if (executionSubscribers != null && !executionSubscribers.isEmpty()) {
-                executionSubscribers.forEach((subscriberId, pair) -> deliver(current, subscriberId, pair.getLeft(), pair.getRight()));
+                executionSubscribers.forEach((subscriberId, subscriber) -> {
+                    // A subscriber still replaying history buffers instead of emitting, so live events
+                    // neither overtake the backfill nor get lost while it runs.
+                    Queue<FollowLogEvent> buffer = subscriber.buffer;
+                    if (buffer != null) {
+                        buffer.add(current);
+                        return;
+                    }
+                    deliver(current, subscriberId, subscriber.sink, subscriber.filters);
+                });
             }
         } catch (Exception e) {
             log.error("Unable to dispatch the log event to its subscribers", e);
@@ -126,16 +136,75 @@ public class LogStreamingService {
      * All subscribers must ensure to call {@link #unregisterSubscriber(String, String)} to avoid any memory leak.
      */
     public void registerSubscriber(String executionId, String subscriberId, FluxSink<Event<FollowLogEvent>> sink, List<QueryFilter> filters) {
+        register(executionId, subscriberId, sink, filters, false);
+    }
+
+    /**
+     * Register a subscriber that holds every incoming event in a buffer instead of emitting it, so a caller
+     * can safely read the already-persisted logs afterwards. Nothing published while that read runs is lost.
+     * The caller must then call {@link #streamBufferedSubscriber(String, String, Set)} to release the buffer
+     * and switch to live delivery, otherwise the subscriber never emits anything.
+     */
+    public void registerBufferedSubscriber(String executionId, String subscriberId, FluxSink<Event<FollowLogEvent>> sink, List<QueryFilter> filters) {
+        register(executionId, subscriberId, sink, filters, true);
+    }
+
+    private void register(String executionId, String subscriberId, FluxSink<Event<FollowLogEvent>> sink, List<QueryFilter> filters, boolean buffered) {
         // it needs to be synchronized as we get and remove if empty, so we must be sure that nobody else is adding a new one in-between
         synchronized (subscriberLock) {
             // Register the subscriber BEFORE resuming the queue to avoid a race where the polling
             // thread delivers an event between resume() and put(), causing events to be dropped.
             subscribers.computeIfAbsent(executionId, k -> new ConcurrentHashMap<>())
-                .put(subscriberId, Pair.of(sink, filters));
+                .put(subscriberId, new Subscriber(sink, filters, buffered ? new ConcurrentLinkedQueue<>() : null));
 
             if (this.queueSubscriber.isPaused()) {
                 this.queueSubscriber.resume();
             }
+        }
+    }
+
+    /**
+     * Release a buffered subscriber: emit everything held while it was buffering, then switch it to live
+     * delivery. Events in {@code alreadyDelivered} are skipped, as the caller has emitted them itself from
+     * its own read — the buffering window overlaps that read, so the same event can appear in both.
+     */
+    public void streamBufferedSubscriber(String executionId, String subscriberId, Set<FollowLogEvent> alreadyDelivered) {
+        Subscriber subscriber;
+        synchronized (subscriberLock) {
+            subscriber = subscribers.getOrDefault(executionId, Map.of()).get(subscriberId);
+            if (subscriber == null || subscriber.buffer == null) {
+                return;
+            }
+        }
+
+        // Drain before clearing the buffer reference so an event arriving mid-drain is still captured;
+        // the last poll after the switch covers the small window between the two.
+        Queue<FollowLogEvent> buffer = subscriber.buffer;
+        drain(buffer, subscriber, subscriberId, executionId, alreadyDelivered);
+        subscriber.buffer = null;
+        drain(buffer, subscriber, subscriberId, executionId, alreadyDelivered);
+    }
+
+    private void drain(Queue<FollowLogEvent> buffer, Subscriber subscriber, String subscriberId, String executionId, Set<FollowLogEvent> alreadyDelivered) {
+        FollowLogEvent buffered;
+        while ((buffered = buffer.poll()) != null) {
+            if (alreadyDelivered != null && alreadyDelivered.contains(buffered)) {
+                continue;
+            }
+            deliver(buffered, subscriberId, subscriber.sink, subscriber.filters);
+        }
+    }
+
+    /** A registered SSE subscriber; {@code buffer} is non-null only while it is replaying history. */
+    private static final class Subscriber {
+        private final FluxSink<Event<FollowLogEvent>> sink;
+        private final List<QueryFilter> filters;
+        private volatile Queue<FollowLogEvent> buffer;
+
+        private Subscriber(FluxSink<Event<FollowLogEvent>> sink, List<QueryFilter> filters, Queue<FollowLogEvent> buffer) {
+            this.sink = sink;
+            this.filters = filters;
+            this.buffer = buffer;
         }
     }
 
@@ -146,7 +215,7 @@ public class LogStreamingService {
     public void unregisterSubscriber(String executionId, String subscriberId) {
         // it needs to be synchronized as we get and remove if empty, so we must be sure that nobody else is adding a new one in-between
         synchronized (subscriberLock) {
-            Map<String, Pair<FluxSink<Event<FollowLogEvent>>, List<QueryFilter>>> executionSubscribers = subscribers.get(executionId);
+            Map<String, Subscriber> executionSubscribers = subscribers.get(executionId);
             if (executionSubscribers != null) {
                 executionSubscribers.remove(subscriberId);
                 if (executionSubscribers.isEmpty()) {

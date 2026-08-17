@@ -2,7 +2,9 @@ package io.kestra.webserver.controllers.api;
 
 import java.io.InputStream;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import org.slf4j.event.Level;
@@ -149,14 +151,26 @@ public class LogController {
             // send a first "empty" event so the SSE is correctly initialized in the frontend in case there are no logs
             emitter.next(Event.of(FollowLogEvent.from(LogEntry.builder().build())).id("start"));
 
-            // fetch repository first
+            // Subscribe BEFORE reading the repository, buffering whatever arrives meanwhile. Reading first
+            // and subscribing after leaves a window whose logs are in neither: too late for the read, too
+            // early for the subscription, so they were never sent at all (#10521).
+            // Pass the same filter list, the streaming service uses the FollowLogEventMatcher
+            // (backed by Searchable<FollowLogEvent>) to apply it.
+            logStreamingService.registerBufferedSubscriber(executionId, subscriberId, emitter, effectiveFilters);
+
+            // Then replay what is already persisted, remembering it so the buffer does not repeat an entry
+            // the read has already emitted — the two overlap by exactly the width of that window.
+            Set<FollowLogEvent> replayed = new HashSet<>();
             logRepository.findAsync(tenantService.resolveTenant(), effectiveFilters)
                 .toStream()
-                .forEach(logEntry -> emitter.next(Event.of(FollowLogEvent.from(logEntry)).id("progress")));
+                .forEach(logEntry -> {
+                    FollowLogEvent event = FollowLogEvent.from(logEntry);
+                    replayed.add(event);
+                    emitter.next(Event.of(event).id("progress"));
+                });
 
-            // consume in realtime — pass the same filter list, the streaming service uses
-            // the FollowLogEventMatcher (backed by Searchable<FollowLogEvent>) to apply it
-            logStreamingService.registerSubscriber(executionId, subscriberId, emitter, effectiveFilters);
+            // History is out, release the buffer and let the subscriber stream live
+            logStreamingService.streamBufferedSubscriber(executionId, subscriberId, replayed);
         }, FluxSink.OverflowStrategy.BUFFER)
             .timeout(Duration.ofHours(1)); // avoid idle SSE sockets by setting a between-item timeout
 
