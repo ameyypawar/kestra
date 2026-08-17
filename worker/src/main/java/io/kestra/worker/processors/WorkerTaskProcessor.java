@@ -418,13 +418,21 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
         );
 
         AtomicInteger metricRunningCount = getMetricRunningCount(workerTask);
-        metricRunningCount.incrementAndGet();
 
         // run it
         WorkerTaskCallable workerTaskCallable = new WorkerTaskCallable(workerTask, task, runContext, metricRegistry, workerGroup);
-        io.kestra.core.models.flows.State.Type state = callJob(workerTaskCallable);
 
-        metricRunningCount.decrementAndGet();
+        // The counter is now shared by every job under these tags rather than owned by this
+        // processor, so an increment that is never undone biases the gauge for the life of the
+        // process instead of dying with a per-job holder. Nothing may run between the increment and
+        // the try.
+        metricRunningCount.incrementAndGet();
+        io.kestra.core.models.flows.State.Type state;
+        try {
+            state = callJob(workerTaskCallable);
+        } finally {
+            metricRunningCount.decrementAndGet();
+        }
 
         // attempt
         TaskRunAttempt taskRunAttempt = builder
