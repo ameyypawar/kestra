@@ -160,9 +160,8 @@ public class LogStreamingService {
      * its own read — the buffering window overlaps that read, so the same event can appear in both.
      */
     public void streamBufferedSubscriber(String executionId, String subscriberId, Set<FollowLogEvent> alreadyDelivered) {
-        // Look the subscriber up under the global lock, then release it before taking the subscriber's own:
-        // dispatch takes the subscriber lock first and may then take the global one (delivery failure
-        // unregisters), so acquiring them in that order here too would be a lock cycle.
+        // Look the subscriber up under the global lock and release it before draining: the drain delivers,
+        // a failed delivery unregisters, and unregistering takes that same global lock.
         Subscriber subscriber;
         synchronized (subscriberLock) {
             subscriber = subscribers.getOrDefault(executionId, Map.of()).get(subscriberId);

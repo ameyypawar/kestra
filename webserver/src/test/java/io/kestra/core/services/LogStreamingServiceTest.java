@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import org.awaitility.Awaitility;
@@ -82,6 +83,15 @@ class LogStreamingServiceTest {
         String subscriberId = IdUtils.create();
         List<FollowLogEvent> received = new CopyOnWriteArrayList<>();
 
+        // A plain subscriber on the same execution: the fanout reaching it proves the queue dispatched,
+        // so "nothing received yet" below cannot just mean the poll had not happened.
+        CountDownLatch dispatched = new CountDownLatch(1);
+        String probeId = IdUtils.create();
+        Flux.<Event<FollowLogEvent>> create(
+            sink -> service.registerSubscriber(EXECUTION_ID, probeId, sink, List.of())
+        ).subscribe(event -> dispatched.countDown());
+
+
         Flux.<Event<FollowLogEvent>> create(
             sink -> service.registerBufferedSubscriber(EXECUTION_ID, subscriberId, sink, List.of())
         )
@@ -91,6 +101,8 @@ class LogStreamingServiceTest {
             // When an event is published during that window
             FollowLogEvent duringReplay = event(Level.INFO, "load-data", "task-run-1", 0, "logged mid-replay");
             queue.emit(duringReplay);
+
+            assertThat(dispatched.await(30, TimeUnit.SECONDS)).as("event must reach the fanout").isTrue();
 
             // Then it is held rather than dropped or emitted early
             Awaitility.await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2))
@@ -108,6 +120,7 @@ class LogStreamingServiceTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {
+            service.unregisterSubscriber(EXECUTION_ID, probeId);
             service.unregisterSubscriber(EXECUTION_ID, subscriberId);
         }
     }
@@ -118,6 +131,15 @@ class LogStreamingServiceTest {
         String subscriberId = IdUtils.create();
         List<FollowLogEvent> received = new CopyOnWriteArrayList<>();
 
+        // A plain subscriber on the same execution: the fanout reaching it proves the queue dispatched,
+        // so "nothing received yet" below cannot just mean the poll had not happened.
+        CountDownLatch dispatched = new CountDownLatch(1);
+        String probeId = IdUtils.create();
+        Flux.<Event<FollowLogEvent>> create(
+            sink -> service.registerSubscriber(EXECUTION_ID, probeId, sink, List.of())
+        ).subscribe(event -> dispatched.countDown());
+
+
         Flux.<Event<FollowLogEvent>> create(
             sink -> service.registerBufferedSubscriber(EXECUTION_ID, subscriberId, sink, List.of())
         )
@@ -126,6 +148,8 @@ class LogStreamingServiceTest {
         try {
             FollowLogEvent alsoPersisted = event(Level.INFO, "load-data", "task-run-1", 0, "already replayed");
             queue.emit(alsoPersisted);
+
+            assertThat(dispatched.await(30, TimeUnit.SECONDS)).as("event must reach the fanout").isTrue();
 
             Awaitility.await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2))
                 .until(() -> received.isEmpty());
@@ -142,6 +166,7 @@ class LogStreamingServiceTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {
+            service.unregisterSubscriber(EXECUTION_ID, probeId);
             service.unregisterSubscriber(EXECUTION_ID, subscriberId);
         }
     }
