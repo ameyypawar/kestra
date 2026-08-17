@@ -28,10 +28,11 @@ public class SecretService<META> {
 
     /**
      * Injected as a field rather than through the constructor so that the secret managers extending
-     * this class keep their current constructors.
+     * this class keep their current constructors. Kept accessible to them, and non-private so that
+     * Micronaut binds it directly instead of falling back to reflection.
      */
     @Inject
-    private SecretConfig secretConfig;
+    protected SecretConfig secretConfig;
 
     @PostConstruct
     private void postConstruct() {

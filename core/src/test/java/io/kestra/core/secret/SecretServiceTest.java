@@ -1,7 +1,10 @@
 package io.kestra.core.secret;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import io.micronaut.context.ApplicationContext;
@@ -17,23 +20,59 @@ class SecretServiceTest {
     /** Valid Base64 for "hello", and also a plausible credential in its own right. */
     private static final String LOOKS_LIKE_BASE64 = "aGVsbG8=";
 
-    @SuppressWarnings("rawtypes")
-    private static SecretService serviceWith(Map<String, Object> properties, Map<String, String> environment) {
+    private final List<ApplicationContext> contexts = new ArrayList<>();
+
+    @AfterEach
+    void closeContexts() {
+        contexts.forEach(ApplicationContext::close);
+        contexts.clear();
+    }
+
+    private ApplicationContext context(Map<String, Object> properties) {
         ApplicationContext context = ApplicationContext.run(properties);
-        SecretService service = context.getBean(SecretService.class);
+        contexts.add(context);
+
+        return context;
+    }
+
+    @SuppressWarnings("rawtypes")
+    private SecretService serviceWith(Map<String, Object> properties, Map<String, String> environment) {
+        SecretService service = context(properties).getBean(SecretService.class);
         service.decode(environment);
 
         return service;
     }
 
     @SuppressWarnings("rawtypes")
-    private static SecretService base64(Map<String, String> environment) {
+    private SecretService base64(Map<String, String> environment) {
         return serviceWith(Map.of(), environment);
     }
 
     @SuppressWarnings("rawtypes")
-    private static SecretService raw(Map<String, String> environment) {
+    private SecretService raw(Map<String, String> environment) {
         return serviceWith(Map.of("kestra.secret.encoding", "raw"), environment);
+    }
+
+    /**
+     * The startup decode runs from {@code @PostConstruct} against {@link System#getenv()}, which a
+     * test cannot populate. What it can pin is the half that would break silently: that the encoding
+     * is injected before that first decode reads it, rather than defaulting to Base64 on a
+     * raw-configured install.
+     */
+    @Test
+    void shouldInjectTheEncodingBeforeTheStartupDecodeReadsIt() {
+        SecretService<?> service = context(Map.of("kestra.secret.encoding", "raw"))
+            .getBean(SecretService.class);
+
+        assertThat(service.secretConfig).isNotNull();
+        assertThat(service.secretConfig.getEncoding()).isEqualTo(SecretConfig.Encoding.RAW);
+    }
+
+    @Test
+    void shouldRejectAnUnknownEncodingRatherThanFallingBack() {
+        assertThatThrownBy(() -> context(Map.of("kestra.secret.encoding", "nonsense"))
+            .getBean(SecretService.class))
+            .hasMessageContaining("encoding");
     }
 
     private static String find(Object service, String key) throws Exception {
