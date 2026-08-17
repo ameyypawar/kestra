@@ -111,6 +111,22 @@ class LabelServiceTest {
     }
 
     @Test
+    void shouldStripABareSystemLabelFromTheFlowWhenMergingForAnExecution() {
+        // `system` is reserved on its own, not only as a prefix (#8089). This is what keeps it off the
+        // execution: ExecutableUtils propagates an execution's system labels into a subflow started with
+        // inheritLabels: false, so a bare `system` surviving to the execution would reach children that
+        // explicitly opted out of inheriting user labels.
+        Flow flow = Flow.builder()
+            .labels(List.of(new Label(Label.SYSTEM, "mine"), new Label("env", "dev")))
+            .build();
+
+        List<Label> labels = LabelService.forExecution(flow, List.of(), "execId");
+
+        assertThat(labels).extracting(Label::key).doesNotContain(Label.SYSTEM);
+        assertThat(labels).contains(new Label("env", "dev"));
+    }
+
+    @Test
     void shouldKeepTheContributedCorrelationIdWhenMergingForAnExecution() {
         // Given a contributed correlation id, as a child execution inherits its parent's
         Flow flow = Flow.builder().build();
