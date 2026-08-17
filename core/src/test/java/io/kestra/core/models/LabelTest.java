@@ -194,4 +194,18 @@ class LabelTest {
         Optional<ConstraintViolationException> digitStartResult = modelValidator.isValid(new Label("9test", "value"));
         assertThat(digitStartResult.isPresent()).isTrue();
     }
+
+    @Test
+    void isSystemShouldCoverTheBareKeyAndAnythingBeneathIt() {
+        assertThat(Label.isSystem(Label.SYSTEM)).isTrue();
+        assertThat(Label.isSystem(Label.CORRELATION_ID)).isTrue();
+        assertThat(Label.isSystem("system.anything")).isTrue();
+
+        // only `system` and `system.*` are reserved
+        assertThat(Label.isSystem("systemic")).isFalse();
+        assertThat(Label.isSystem("system-wide")).isFalse();
+        assertThat(Label.isSystem("mysystem")).isFalse();
+        assertThat(Label.isSystem("env")).isFalse();
+        assertThat(Label.isSystem(null)).isFalse();
+    }
 }
