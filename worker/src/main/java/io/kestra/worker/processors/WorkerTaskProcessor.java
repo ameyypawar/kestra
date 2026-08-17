@@ -11,7 +11,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -39,7 +38,6 @@ import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.server.ServerConfig;
 import io.kestra.core.server.WorkerTaskRestartStrategy;
 import io.kestra.core.trace.Tracer;
-import io.kestra.core.utils.Hashing;
 import io.kestra.core.utils.Logs;
 import io.kestra.core.utils.TruthUtils;
 import io.kestra.plugin.core.flow.WorkingDirectory;
@@ -62,9 +60,6 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
     private final ServerConfig serverConfig;
     private final RunContextInitializer runContextInitializer;
     private final RunContextLoggerFactory runContextLoggerFactory;
-
-    // METRICS
-    private final Map<Long, AtomicInteger> metricRunningCount = new ConcurrentHashMap<>();
 
     // QUEUEs
     private final WorkerQueue<WorkerTaskResult> workerTaskResultQueue;
@@ -516,18 +511,10 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
     }
 
     private AtomicInteger getMetricRunningCount(final WorkerTask workerTask) {
-        String[] tags = this.metricRegistry.tags(workerTask, workerGroup);
-
-        long index = Hashing.hashToLong(String.join("-", tags));
-
-        return this.metricRunningCount
-            .computeIfAbsent(
-                index, l -> metricRegistry.gauge(
-                    MetricRegistry.METRIC_WORKER_RUNNING_COUNT,
-                    MetricRegistry.METRIC_WORKER_RUNNING_COUNT_DESCRIPTION,
-                    new AtomicInteger(0),
-                    tags
-                )
-            );
+        return this.metricRegistry.sharedCountGauge(
+            MetricRegistry.METRIC_WORKER_RUNNING_COUNT,
+            MetricRegistry.METRIC_WORKER_RUNNING_COUNT_DESCRIPTION,
+            this.metricRegistry.tags(workerTask, workerGroup)
+        );
     }
 }

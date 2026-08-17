@@ -12,6 +12,7 @@ import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.metrics.MetricRegistry;
 import io.kestra.core.models.assets.AssetsDeclaration;
 import io.kestra.core.models.executions.Execution;
+import io.kestra.core.metrics.MetricRegistry;
 import io.kestra.core.models.executions.LogEntry;
 import io.kestra.core.models.executions.TaskRun;
 import io.kestra.core.models.flows.Flow;
@@ -235,6 +236,70 @@ class WorkerTaskProcessorTest {
         assertThat(escalationLog.getMessage()).contains("SUCCESS").contains("WARNING").contains("WARN");
     }
 
+    /**
+     * The worker builds one {@link WorkerTaskProcessor} per job, so gauge state the processor holds
+     * itself is discarded between jobs. Micrometer keeps the holder given at the first registration
+     * of a name and tag set, so every job after the first was incrementing a counter no meter read.
+     */
+    @Test
+    void runningCountGaugeIsReadableWhileASecondJobRuns() {
+        WorkerQueue<WorkerTaskResult> resultQueue = new InMemoryWorkerQueue<>(100);
+
+        WorkerTask first = metricsProbeWorkerTask();
+        MetricsProbe.registry = metricRegistry;
+        MetricsProbe.tags = metricRegistry.tags(first, WorkerGroups.DEFAULT_ID);
+        MetricsProbe.countWhileRunning.set(-1d);
+
+        newProcessor(resultQueue).process(first);
+        double whileFirstRan = MetricsProbe.countWhileRunning.get();
+
+        // a second job, through its own processor, exactly as the worker dispatches it
+        WorkerTask second = metricsProbeWorkerTask();
+        assertThat(metricRegistry.tags(second, WorkerGroups.DEFAULT_ID))
+            .as("both jobs must land on one tag set for this to exercise re-registration")
+            .isEqualTo(MetricsProbe.tags);
+
+        MetricsProbe.countWhileRunning.set(-1d);
+        newProcessor(resultQueue).process(second);
+        double whileSecondRan = MetricsProbe.countWhileRunning.get();
+
+        assertThat(whileFirstRan).isEqualTo(1d);
+        assertThat(whileSecondRan)
+            .as("the gauge must follow the second job too, not stay on the holder the first left behind")
+            .isEqualTo(1d);
+
+        assertThat(metricRegistry.find(MetricRegistry.METRIC_WORKER_RUNNING_COUNT)
+            .tags(MetricsProbe.tags).gauge().value())
+            .as("back to zero once both jobs have ended")
+            .isZero();
+    }
+
+    /**
+     * Fixed flow and namespace ids: the tags carry them, and two jobs have to share one tag set to
+     * exercise a second registration of the same meter.
+     */
+    private WorkerTask metricsProbeWorkerTask() {
+        MetricsProbe task = MetricsProbe.builder()
+            .type(MetricsProbe.class.getName())
+            .id("metrics-probe-task")
+            .build();
+
+        Flow flow = Flow.builder()
+            .id("metrics-probe-flow")
+            .namespace("io.kestra.unit-test")
+            .tasks(List.of(task))
+            .build();
+
+        Execution execution = TestsUtils.mockExecution(flow, Map.of());
+        ResolvedTask resolvedTask = ResolvedTask.of(task);
+
+        return WorkerTask.builder()
+            .data(WorkerTaskData.from(runContextFactory.of(Map.of("key", "value"))))
+            .task(task)
+            .taskRun(TaskRun.of(execution, resolvedTask))
+            .build();
+    }
+
     private WorkerTaskProcessor newProcessor(WorkerQueue<WorkerTaskResult> resultQueue) {
         return new WorkerTaskProcessor(
             "test-worker",
@@ -336,6 +401,28 @@ class WorkerTaskProcessorTest {
      * A task that always fails on its own (throws when run), modeling e.g. a script container exiting
      * non-zero. Constructed and executed directly by the processor, so no plugin registration is needed.
      */
+    /**
+     * Samples the running-count gauge from inside its own run, which is the only point at which the
+     * job is observably running without a second thread and a latch.
+     */
+    @SuperBuilder
+    @Getter
+    @NoArgsConstructor
+    public static class MetricsProbe extends Task implements RunnableTask<VoidOutput> {
+        static MetricRegistry registry;
+        static String[] tags;
+        static final java.util.concurrent.atomic.AtomicReference<Double> countWhileRunning =
+            new java.util.concurrent.atomic.AtomicReference<>(-1d);
+
+        @Override
+        public VoidOutput run(RunContext runContext) {
+            var gauge = registry.find(MetricRegistry.METRIC_WORKER_RUNNING_COUNT).tags(tags).gauge();
+            countWhileRunning.set(gauge == null ? null : gauge.value());
+
+            return null;
+        }
+    }
+
     @SuperBuilder
     @Getter
     @NoArgsConstructor

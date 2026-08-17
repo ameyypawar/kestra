@@ -1,7 +1,11 @@
 package io.kestra.core.metrics;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import org.apache.commons.lang3.ArrayUtils;
@@ -266,9 +270,42 @@ public class MetricRegistry {
 
     private final MetricConfig metricConfig;
 
+    private final Map<List<String>, AtomicInteger> sharedCountGauges = new ConcurrentHashMap<>();
+
     public MetricRegistry(MeterRegistry meterRegistry, MetricConfig metricConfig) {
         this.meterRegistry = meterRegistry;
         this.metricConfig = metricConfig;
+    }
+
+    /**
+     * Return the counter backing a gauge for this name and tag set, registering the gauge the first
+     * time the pair is seen.
+     *
+     * <p>Micrometer keeps the supplier given at the <em>first</em> registration of a name and tag
+     * set and silently discards every later one, returning the meter that already exists. A caller
+     * that is re-created per job therefore cannot hold its own counter and register it each time:
+     * every job after the first would update a counter that nothing reads, leaving the gauge stuck
+     * at the value the first job left behind. Sharing one counter per tag set through the registry
+     * — which is a singleton — keeps the registered gauge and the updated counter the same object.
+     */
+    public AtomicInteger sharedCountGauge(String name, String description, String... tags) {
+        return this.sharedCountGauges.computeIfAbsent(
+            gaugeKey(name, tags),
+            key -> this.gauge(name, description, new AtomicInteger(0), tags)
+        );
+    }
+
+    /**
+     * Key a shared gauge by the same pair Micrometer identifies a meter with. The segments are kept
+     * as a list rather than joined into one string, so that no separator has to be assumed absent
+     * from tag keys and values.
+     */
+    private static List<String> gaugeKey(String name, String... tags) {
+        String[] segments = new String[tags.length + 1];
+        segments[0] = name;
+        System.arraycopy(tags, 0, segments, 1, tags.length);
+
+        return Arrays.asList(segments);
     }
 
     /**
