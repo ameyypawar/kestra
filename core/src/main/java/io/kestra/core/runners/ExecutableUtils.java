@@ -203,7 +203,18 @@ public final class ExecutableUtils {
 
                 List<Label> newLabels = inheritLabels ? new ArrayList<>(filterLabels(currentExecution.getLabels(), flow)) : new ArrayList<>(systemLabels(currentExecution));
                 if (labels != null) {
-                    labels.forEach(throwConsumer(label -> newLabels.add(new Label(runContext.render(label.key()), runContext.render(label.value())))));
+                    labels.forEach(throwConsumer(label ->
+                    {
+                        // Re-check the rendered key: @NoSystemLabelValidation ran against the authored one, so a
+                        // templated key such as `{{ 'system' }}` reaches here having passed validation.
+                        String key = runContext.render(label.key());
+                        if (Label.isSystem(key)) {
+                            throw new IllegalArgumentException(
+                                "System labels can only be set by Kestra itself, offending label: " + key + "=" + runContext.render(label.value())
+                            );
+                        }
+                        newLabels.add(new Label(key, runContext.render(label.value())));
+                    }));
                 }
 
                 var variables = ImmutableMap.<String, Object> builder().putAll(
