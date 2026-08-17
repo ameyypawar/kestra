@@ -248,7 +248,8 @@ class WorkerTaskProcessorTest {
 
         WorkerTask first = metricsProbeWorkerTask();
         MetricsProbe.registry = metricRegistry;
-        MetricsProbe.tags = metricRegistry.tags(first, WorkerGroups.DEFAULT_ID);
+        MetricsProbe.countTags = metricRegistry.tags(first, WorkerGroups.DEFAULT_ID);
+        MetricsProbe.durationTags = metricRegistry.stableTags(first, WorkerGroups.DEFAULT_ID);
         MetricsProbe.countWhileRunning.set(-1d);
 
         newProcessor(resultQueue).process(first);
@@ -258,7 +259,7 @@ class WorkerTaskProcessorTest {
         WorkerTask second = metricsProbeWorkerTask();
         assertThat(metricRegistry.tags(second, WorkerGroups.DEFAULT_ID))
             .as("both jobs must land on one tag set for this to exercise re-registration")
-            .isEqualTo(MetricsProbe.tags);
+            .isEqualTo(MetricsProbe.countTags);
 
         MetricsProbe.countWhileRunning.set(-1d);
         newProcessor(resultQueue).process(second);
@@ -270,7 +271,7 @@ class WorkerTaskProcessorTest {
             .isEqualTo(1d);
 
         assertThat(metricRegistry.find(MetricRegistry.METRIC_WORKER_RUNNING_COUNT)
-            .tags(MetricsProbe.tags).gauge().value())
+            .tags(MetricsProbe.countTags).gauge().value())
             .as("back to zero once both jobs have ended")
             .isZero();
     }
@@ -281,7 +282,8 @@ class WorkerTaskProcessorTest {
 
         WorkerTask workerTask = metricsProbeWorkerTask();
         MetricsProbe.registry = metricRegistry;
-        MetricsProbe.tags = metricRegistry.tags(workerTask, WorkerGroups.DEFAULT_ID);
+        MetricsProbe.countTags = metricRegistry.tags(workerTask, WorkerGroups.DEFAULT_ID);
+        MetricsProbe.durationTags = metricRegistry.stableTags(workerTask, WorkerGroups.DEFAULT_ID);
         MetricsProbe.durationWhileRunning.set(-1d);
 
         newProcessor(resultQueue).process(workerTask);
@@ -291,7 +293,7 @@ class WorkerTaskProcessorTest {
             .isGreaterThanOrEqualTo(0d);
 
         assertThat(metricRegistry.find(MetricRegistry.METRIC_WORKER_RUNNING_DURATION)
-            .tags(MetricsProbe.tags).gauge().value())
+            .tags(MetricsProbe.durationTags).gauge().value())
             .as("no job is running once the processor returns")
             .isZero();
     }
@@ -320,6 +322,36 @@ class WorkerTaskProcessorTest {
             .task(task)
             .taskRun(TaskRun.of(execution, resolvedTask))
             .build();
+    }
+
+    /**
+     * Prometheus keeps the first tag-key set registered under a meter name and refuses later ones, so
+     * a worker running both tenanted and untenanted task runs must not produce two shapes.
+     */
+    @Test
+    void durationGaugeTagKeysDoNotDependOnTheTenant() {
+        WorkerTask untenanted = metricsProbeWorkerTask();
+        WorkerTask tenanted = untenanted
+            .withTaskRun(untenanted.getTaskRun().toBuilder().tenantId("a-tenant").build());
+
+        assertThat(tenanted.getTaskRun().getTenantId()).isNotNull();
+        assertThat(untenanted.getTaskRun().getTenantId()).isNull();
+
+        assertThat(tagKeys(metricRegistry.stableTags(tenanted, WorkerGroups.DEFAULT_ID)))
+            .isEqualTo(tagKeys(metricRegistry.stableTags(untenanted, WorkerGroups.DEFAULT_ID)));
+
+        // the control: the tag builder the count metric uses does vary, which is the defect above
+        assertThat(tagKeys(metricRegistry.tags(tenanted, WorkerGroups.DEFAULT_ID)))
+            .isNotEqualTo(tagKeys(metricRegistry.tags(untenanted, WorkerGroups.DEFAULT_ID)));
+    }
+
+    private static List<String> tagKeys(String[] tags) {
+        List<String> keys = new java.util.ArrayList<>();
+        for (int i = 0; i < tags.length; i += 2) {
+            keys.add(tags[i]);
+        }
+
+        return keys;
     }
 
     private WorkerTaskProcessor newProcessor(WorkerQueue<WorkerTaskResult> resultQueue) {
@@ -432,19 +464,20 @@ class WorkerTaskProcessorTest {
     @NoArgsConstructor
     public static class MetricsProbe extends Task implements RunnableTask<VoidOutput> {
         static MetricRegistry registry;
-        static String[] tags;
+        static String[] countTags;
+        static String[] durationTags;
         static final java.util.concurrent.atomic.AtomicReference<Double> countWhileRunning = new java.util.concurrent.atomic.AtomicReference<>(-1d);
         static final java.util.concurrent.atomic.AtomicReference<Double> durationWhileRunning = new java.util.concurrent.atomic.AtomicReference<>(-1d);
 
         @Override
         public VoidOutput run(RunContext runContext) {
-            countWhileRunning.set(sample(MetricRegistry.METRIC_WORKER_RUNNING_COUNT));
-            durationWhileRunning.set(sample(MetricRegistry.METRIC_WORKER_RUNNING_DURATION));
+            countWhileRunning.set(sample(MetricRegistry.METRIC_WORKER_RUNNING_COUNT, countTags));
+            durationWhileRunning.set(sample(MetricRegistry.METRIC_WORKER_RUNNING_DURATION, durationTags));
 
             return null;
         }
 
-        private static Double sample(String name) {
+        private static Double sample(String name, String[] tags) {
             var gauge = registry.find(name).tags(tags).gauge();
 
             return gauge == null ? null : gauge.value();

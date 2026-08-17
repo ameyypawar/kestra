@@ -505,6 +505,24 @@ public class MetricRegistry {
     }
 
     /**
+     * The tags of {@link #tags(WorkerTask, String, String...)} with {@code tenant_id} always
+     * present, using {@link #TAG_LABEL_PLACEHOLDER} when the task run carries no tenant.
+     *
+     * <p>That method drops the key entirely rather than emitting an empty value, so a worker running
+     * both tenanted and untenanted task runs would register one meter name under two different sets
+     * of tag keys. Prometheus keeps whichever set is registered first and refuses the other for the
+     * lifetime of the process, so a meter that has to stay readable whatever arrives first needs its
+     * keys to be the same every time.
+     */
+    public String[] stableTags(WorkerTask workerTask, String workerGroupId, String... tags) {
+        String[] baseTags = this.tags(workerTask, workerGroupId, tags);
+
+        return workerTask.getTaskRun().getTenantId() == null
+            ? ArrayUtils.addAll(baseTags, TAG_TENANT_ID, TAG_LABEL_PLACEHOLDER)
+            : baseTags;
+    }
+
+    /**
      * Return tags for current {@link WorkerTrigger}.
      * We don't include current state since it will break up the values per state which make no sense.
      *

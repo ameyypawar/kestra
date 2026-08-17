@@ -534,7 +534,7 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
         return this.metricRegistry.sharedDurationGauge(
             MetricRegistry.METRIC_WORKER_RUNNING_DURATION,
             MetricRegistry.METRIC_WORKER_RUNNING_DURATION_DESCRIPTION,
-            this.metricRegistry.tags(workerTask, workerGroup)
+            this.metricRegistry.stableTags(workerTask, workerGroup)
         );
     }
 }
