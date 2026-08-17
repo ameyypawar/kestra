@@ -15,6 +15,7 @@ import io.kestra.core.repositories.ArrayListTotal;
 
 import io.micronaut.data.model.Pageable;
 import jakarta.annotation.PostConstruct;
+import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
 
@@ -25,20 +26,38 @@ public class SecretService<META> {
 
     private Map<String, String> decodedSecrets;
 
+    /**
+     * Injected as a field rather than through the constructor so that the secret managers extending
+     * this class keep their current constructors.
+     */
+    @Inject
+    private SecretConfig secretConfig;
+
     @PostConstruct
     private void postConstruct() {
         this.decode();
     }
 
     public void decode() {
-        decodedSecrets = System.getenv().entrySet().stream()
+        this.decode(System.getenv());
+    }
+
+    /**
+     * Reads the {@code SECRET_*} entries of the given environment, applying the configured encoding.
+     *
+     * <p>A value that cannot be decoded is left out rather than stored, so it later surfaces as a
+     * {@link SecretNotFoundException}; the log line here is the only account of why.
+     */
+    void decode(Map<String, String> environment) {
+        SecretConfig.Encoding encoding = this.encoding();
+
+        decodedSecrets = environment.entrySet().stream()
             .filter(entry -> entry.getKey().startsWith(SECRET_PREFIX)).<Map.Entry<String, String>> mapMulti((entry, consumer) ->
             {
                 try {
-                    String value = entry.getValue().replaceAll("\\R", "");
-                    consumer.accept(Map.entry(entry.getKey(), new String(Base64.getDecoder().decode(value))));
+                    consumer.accept(Map.entry(entry.getKey(), decodeValue(entry.getValue(), encoding)));
                 } catch (Exception e) {
-                    log.error("Could not decode secret '{}', make sure it is Base64-encoded: {}", entry.getKey(), e.getMessage());
+                    log.error("Could not decode secret '{}', make sure it is {}-encoded: {}", entry.getKey(), encoding, e.getMessage());
                 }
             })
             .collect(
@@ -47,6 +66,19 @@ public class SecretService<META> {
                     Map.Entry::getValue
                 )
             );
+    }
+
+    private static String decodeValue(String value, SecretConfig.Encoding encoding) {
+        return switch (encoding) {
+            // Untouched, newlines included: a raw value is whatever the environment holds, and
+            // stripping line breaks here would corrupt a multi-line credential.
+            case RAW -> value;
+            case BASE64 -> new String(Base64.getDecoder().decode(value.replaceAll("\\R", "")));
+        };
+    }
+
+    private SecretConfig.Encoding encoding() {
+        return secretConfig == null ? SecretConfig.Encoding.BASE64 : secretConfig.getEncoding();
     }
 
     public String findSecret(String tenantId, String namespace, String key) throws SecretNotFoundException, IOException {
