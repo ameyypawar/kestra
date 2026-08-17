@@ -11,7 +11,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -25,6 +24,7 @@ import com.google.common.collect.ImmutableList;
 
 import io.kestra.core.exceptions.IllegalVariableEvaluationException;
 import io.kestra.core.metrics.MetricRegistry;
+import io.kestra.core.metrics.RunningDurations;
 import io.kestra.core.models.assets.Asset;
 import io.kestra.core.models.assets.AssetIdentifier;
 import io.kestra.core.models.assets.AssetsDeclaration;
@@ -39,7 +39,6 @@ import io.kestra.core.serializers.JacksonMapper;
 import io.kestra.core.server.ServerConfig;
 import io.kestra.core.server.WorkerTaskRestartStrategy;
 import io.kestra.core.trace.Tracer;
-import io.kestra.core.utils.Hashing;
 import io.kestra.core.utils.Logs;
 import io.kestra.core.utils.TruthUtils;
 import io.kestra.plugin.core.flow.WorkingDirectory;
@@ -62,9 +61,6 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
     private final ServerConfig serverConfig;
     private final RunContextInitializer runContextInitializer;
     private final RunContextLoggerFactory runContextLoggerFactory;
-
-    // METRICS
-    private final Map<Long, AtomicInteger> metricRunningCount = new ConcurrentHashMap<>();
 
     // QUEUEs
     private final WorkerQueue<WorkerTaskResult> workerTaskResultQueue;
@@ -423,13 +419,24 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
         );
 
         AtomicInteger metricRunningCount = getMetricRunningCount(workerTask);
-        metricRunningCount.incrementAndGet();
+        RunningDurations metricRunningDurations = getMetricRunningDurations(workerTask);
 
         // run it
         WorkerTaskCallable workerTaskCallable = new WorkerTaskCallable(workerTask, task, runContext, metricRegistry, workerGroup);
-        io.kestra.core.models.flows.State.Type state = callJob(workerTaskCallable);
 
-        metricRunningCount.decrementAndGet();
+        metricRunningCount.incrementAndGet();
+        Object runningToken = metricRunningDurations.started(System.nanoTime());
+
+        io.kestra.core.models.flows.State.Type state;
+        try {
+            state = callJob(workerTaskCallable);
+        } finally {
+            // callJob turns any Exception into a FAILED state, so this only guards against an Error,
+            // but a start time that is never released leaves the duration gauge climbing forever for
+            // a task that has already ended.
+            metricRunningCount.decrementAndGet();
+            metricRunningDurations.finished(runningToken);
+        }
 
         // attempt
         TaskRunAttempt taskRunAttempt = builder
@@ -516,18 +523,18 @@ public class WorkerTaskProcessor extends AbstractWorkerJobProcessor<WorkerTask> 
     }
 
     private AtomicInteger getMetricRunningCount(final WorkerTask workerTask) {
-        String[] tags = this.metricRegistry.tags(workerTask, workerGroup);
+        return this.metricRegistry.sharedCountGauge(
+            MetricRegistry.METRIC_WORKER_RUNNING_COUNT,
+            MetricRegistry.METRIC_WORKER_RUNNING_COUNT_DESCRIPTION,
+            this.metricRegistry.tags(workerTask, workerGroup)
+        );
+    }
 
-        long index = Hashing.hashToLong(String.join("-", tags));
-
-        return this.metricRunningCount
-            .computeIfAbsent(
-                index, l -> metricRegistry.gauge(
-                    MetricRegistry.METRIC_WORKER_RUNNING_COUNT,
-                    MetricRegistry.METRIC_WORKER_RUNNING_COUNT_DESCRIPTION,
-                    new AtomicInteger(0),
-                    tags
-                )
-            );
+    private RunningDurations getMetricRunningDurations(final WorkerTask workerTask) {
+        return this.metricRegistry.sharedDurationGauge(
+            MetricRegistry.METRIC_WORKER_RUNNING_DURATION,
+            MetricRegistry.METRIC_WORKER_RUNNING_DURATION_DESCRIPTION,
+            this.metricRegistry.tags(workerTask, workerGroup)
+        );
     }
 }

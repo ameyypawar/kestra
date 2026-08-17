@@ -1,7 +1,11 @@
 package io.kestra.core.metrics;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import org.apache.commons.lang3.ArrayUtils;
@@ -38,6 +42,8 @@ public class MetricRegistry {
     public static final String METRIC_WORKER_MAX_CONCURRENCY_DESCRIPTION = "Maximum number of in-flight jobs the worker can hold (threads currently executing + jobs pending in the buffer)";
     public static final String METRIC_WORKER_RUNNING_COUNT = "worker.running.count";
     public static final String METRIC_WORKER_RUNNING_COUNT_DESCRIPTION = "The number of tasks currently running inside the Worker";
+    public static final String METRIC_WORKER_RUNNING_DURATION = "worker.running.duration";
+    public static final String METRIC_WORKER_RUNNING_DURATION_DESCRIPTION = "The duration in seconds of the longest task currently running inside the Worker";
     public static final String METRIC_WORKER_PENDING_COUNT = "worker.pending.count";
     public static final String METRIC_WORKER_PENDING_COUNT_DESCRIPTION = "The number of tasks currently pending for a runnable thread inside the Worker";
     public static final String METRIC_WORKER_QUEUED_DURATION = "worker.queued.duration";
@@ -266,9 +272,63 @@ public class MetricRegistry {
 
     private final MetricConfig metricConfig;
 
+    private final Map<List<String>, AtomicInteger> sharedCountGauges = new ConcurrentHashMap<>();
+
+    private final Map<List<String>, RunningDurations> sharedDurationGauges = new ConcurrentHashMap<>();
+
     public MetricRegistry(MeterRegistry meterRegistry, MetricConfig metricConfig) {
         this.meterRegistry = meterRegistry;
         this.metricConfig = metricConfig;
+    }
+
+    /**
+     * Return the counter backing a gauge for this name and tag set, registering the gauge the first
+     * time the pair is seen.
+     *
+     * <p>Micrometer keeps the supplier given at the <em>first</em> registration of a name and tag
+     * set and silently discards every later one, returning the meter that already exists. A caller
+     * that is re-created per job therefore cannot hold its own counter and register it each time:
+     * every job after the first would update a counter that nothing reads, leaving the gauge stuck
+     * at the value the first job left behind. Sharing one counter per tag set through the registry
+     * — which is a singleton — keeps the registered gauge and the updated counter the same object.
+     */
+    public AtomicInteger sharedCountGauge(String name, String description, String... tags) {
+        return this.sharedCountGauges.computeIfAbsent(
+            gaugeKey(name, tags),
+            key -> this.gauge(name, description, new AtomicInteger(0), tags)
+        );
+    }
+
+    /**
+     * Return the {@link RunningDurations} backing a gauge that reports the duration of the longest
+     * job currently running under this name and tag set, registering the gauge the first time the
+     * pair is seen.
+     *
+     * <p>Shared per tag set for the same reason as {@link #sharedCountGauge}.
+     */
+    public RunningDurations sharedDurationGauge(String name, String description, String... tags) {
+        return this.sharedDurationGauges.computeIfAbsent(
+            gaugeKey(name, tags),
+            key -> {
+                RunningDurations durations = new RunningDurations();
+                Supplier<Double> value = () -> durations.maxDurationSeconds(System.nanoTime());
+                this.gauge(name, description, value, tags);
+                return durations;
+            }
+        );
+    }
+
+    /**
+     * Key a shared gauge by the same pair Micrometer identifies a meter with. The segments are kept
+     * as a list rather than joined into one string, so that no separator has to be assumed absent
+     * from tag keys and values.
+     */
+    private static List<String> gaugeKey(String name, String... tags) {
+        String[] segments = new String[tags.length + 1];
+        segments[0] = name;
+        System.arraycopy(tags, 0, segments, 1, tags.length);
+
+        return Arrays.asList(segments);
     }
 
     /**
