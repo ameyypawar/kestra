@@ -1,0 +1,42 @@
+name: UI unit tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      target-ref:
+        description: 'Branch to test'
+        type: string
+        required: true
+      filter:
+        description: 'Optional vitest name filter'
+        type: string
+        required: false
+        default: ''
+
+jobs:
+  vitest:
+    name: vitest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the branch under test
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target-ref }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
+
+      - name: Run unit tests
+        working-directory: ui
+        run: |
+          if [ -n "${{ inputs.filter }}" ]; then
+            npx vitest run --reporter=verbose -t "${{ inputs.filter }}"
+          else
+            npx vitest run --reporter=verbose
+          fi
