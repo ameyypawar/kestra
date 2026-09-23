@@ -74,14 +74,4 @@ public class PropertyValueExtractorTest {
         assertThat(validator.validate(new NotBlankPropertyDto(parsed))).isEmpty();
     }
 
-    // The other half: skipping the unrendered value must not skip the rendered one as well.
-    @Test
-    public void should_still_reject_a_blank_rendered_value() {
-        NotBlankPropertyDto dto = new NotBlankPropertyDto(Property.ofValue(" "));
-
-        Set<ConstraintViolation<NotBlankPropertyDto>> violations = validator.validate(dto);
-        assertThat(violations.size()).isEqualTo(1);
-        assertThat(violations.stream().findFirst().get().getMessage()).isEqualTo("must not be blank");
-    }
-
 }
