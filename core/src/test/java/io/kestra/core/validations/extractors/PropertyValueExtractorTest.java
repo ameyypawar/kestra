@@ -60,4 +60,23 @@ public class PropertyValueExtractorTest {
         assertThat(validator.validate(dto)).isEmpty();
     }
 
+    // The state a flow lands in: the deserializer keeps the literal as the expression and leaves
+    // the value unset, so a constraint that rejects null used to fail on a value the user wrote.
+    @Test
+    public void should_not_reject_an_unrendered_value_as_blank() {
+        NotBlankPropertyDto dto = new NotBlankPropertyDto(Property.ofExpression("Text to be reverted"));
+
+        assertThat(validator.validate(dto)).isEmpty();
+    }
+
+    // The other half: skipping the unrendered value must not also skip the rendered one.
+    @Test
+    public void should_still_reject_a_blank_rendered_value() {
+        NotBlankPropertyDto dto = new NotBlankPropertyDto(Property.ofValue(" "));
+
+        Set<ConstraintViolation<NotBlankPropertyDto>> violations = validator.validate(dto);
+        assertThat(violations.size()).isEqualTo(1);
+        assertThat(violations.stream().findFirst().get().getMessage()).isEqualTo("must not be blank");
+    }
+
 }

@@ -14,7 +14,16 @@ public class PropertyValueExtractor implements ValueExtractor<Property<@Extracte
 
     @Override
     public void extractValues(Property<?> originalValue, ValueReceiver receiver) {
-        // this will disable validation at save time but enable it at runtime when the value would be populated
-        receiver.value(null, originalValue.getValue());
+        Object value = originalValue.getValue();
+
+        // A property parsed from a flow carries only its expression until it is rendered, so there
+        // is nothing to validate at save time. Reporting the absent value as null only skipped the
+        // constraints that accept null; the ones that reject it (@NotBlank, @NotNull, @NotEmpty)
+        // failed instead, on a value the user had written literally. Reporting no element at all
+        // disables validation here for every constraint, and leaves it intact once the value is
+        // populated at runtime.
+        if (value != null) {
+            receiver.value(null, value);
+        }
     }
 }
