@@ -2,7 +2,9 @@ package io.kestra.webserver.controllers.api;
 
 import java.io.InputStream;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import org.slf4j.event.Level;
@@ -151,14 +153,20 @@ public class LogController {
             // send a first "empty" event so the SSE is correctly initialized in the frontend in case there are no logs
             emitter.next(Event.of(FollowLogEvent.from(LogEntry.builder().build())).id("start"));
 
-            // fetch repository first
+            // Subscribed before the repository read, with the same filters, so a log published in between is held instead of lost.
+            logStreamingService.registerBufferedSubscriber(executionId, subscriberId, emitter, effectiveFilters);
+
+            Set<FollowLogEvent> sent = new HashSet<>();
             logRepository.findAsync(tenantService.resolveTenant(), effectiveFilters)
                 .toStream()
-                .forEach(logEntry -> emitter.next(Event.of(FollowLogEvent.from(logEntry)).id("progress")));
+                .map(FollowLogEvent::from)
+                .forEach(event ->
+                {
+                    sent.add(event);
+                    emitter.next(Event.of(event).id("progress"));
+                });
 
-            // consume in realtime — pass the same filter list, the streaming service uses
-            // the FollowLogEventMatcher (backed by Searchable<FollowLogEvent>) to apply it
-            logStreamingService.registerSubscriber(executionId, subscriberId, emitter, effectiveFilters);
+            logStreamingService.streamBufferedSubscriber(executionId, subscriberId, sent);
         }, FluxSink.OverflowStrategy.BUFFER)
             .timeout(Duration.ofHours(1)); // avoid idle SSE sockets by setting a between-item timeout
 

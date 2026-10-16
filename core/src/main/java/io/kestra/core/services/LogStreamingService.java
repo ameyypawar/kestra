@@ -1,10 +1,11 @@
 package io.kestra.core.services;
 
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
-import org.apache.commons.lang3.tuple.Pair;
 
 import io.kestra.core.exceptions.DeserializationException;
 import io.kestra.core.models.QueryFilter;
@@ -36,7 +37,7 @@ import reactor.core.publisher.FluxSink;
 @Slf4j
 @Singleton
 public class LogStreamingService {
-    private final Map<String, Map<String, Pair<FluxSink<Event<FollowLogEvent>>, List<QueryFilter>>>> subscribers = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, Subscriber>> subscribers = new ConcurrentHashMap<>();
     private final Object subscriberLock = new Object();
 
     @Inject
@@ -77,10 +78,10 @@ public class LogStreamingService {
             }
 
             // Get all subscribers for this execution
-            Map<String, Pair<FluxSink<Event<FollowLogEvent>>, List<QueryFilter>>> executionSubscribers = subscribers.get(current.executionId());
+            Map<String, Subscriber> executionSubscribers = subscribers.get(current.executionId());
 
             if (executionSubscribers != null && !executionSubscribers.isEmpty()) {
-                executionSubscribers.forEach((subscriberId, pair) -> deliver(current, subscriberId, pair.getLeft(), pair.getRight()));
+                executionSubscribers.forEach((subscriberId, subscriber) -> subscriber.accept(current, subscriberId));
             }
         } catch (Exception e) {
             log.error("Unable to dispatch the log event to its subscribers", e);
@@ -126,12 +127,40 @@ public class LogStreamingService {
      * All subscribers must ensure to call {@link #unregisterSubscriber(String, String)} to avoid any memory leak.
      */
     public void registerSubscriber(String executionId, String subscriberId, FluxSink<Event<FollowLogEvent>> sink, List<QueryFilter> filters) {
+        register(executionId, subscriberId, new Subscriber(sink, filters, null));
+    }
+
+    /**
+     * Same as {@link #registerSubscriber(String, String, FluxSink, List)}, except that the events are held until
+     * {@link #streamBufferedSubscriber(String, String, Set)} is called, so the caller can first send the logs already stored.
+     */
+    public void registerBufferedSubscriber(String executionId, String subscriberId, FluxSink<Event<FollowLogEvent>> sink, List<QueryFilter> filters) {
+        register(executionId, subscriberId, new Subscriber(sink, filters, new ArrayDeque<>()));
+    }
+
+    /**
+     * Send the events held for a subscriber registered with {@link #registerBufferedSubscriber(String, String, FluxSink, List)},
+     * except the ones in {@code alreadySent}, then send the next events as they arrive.
+     */
+    public void streamBufferedSubscriber(String executionId, String subscriberId, Set<FollowLogEvent> alreadySent) {
+        Subscriber subscriber;
+        synchronized (subscriberLock) {
+            subscriber = subscribers.getOrDefault(executionId, Map.of()).get(subscriberId);
+        }
+
+        // Released outside the lock, as a failed delivery unregisters the subscriber, which takes that same lock.
+        if (subscriber != null) {
+            subscriber.release(subscriberId, alreadySent);
+        }
+    }
+
+    private void register(String executionId, String subscriberId, Subscriber subscriber) {
         // it needs to be synchronized as we get and remove if empty, so we must be sure that nobody else is adding a new one in-between
         synchronized (subscriberLock) {
             // Register the subscriber BEFORE resuming the queue to avoid a race where the polling
             // thread delivers an event between resume() and put(), causing events to be dropped.
             subscribers.computeIfAbsent(executionId, k -> new ConcurrentHashMap<>())
-                .put(subscriberId, Pair.of(sink, filters));
+                .put(subscriberId, subscriber);
 
             if (this.queueSubscriber.isPaused()) {
                 this.queueSubscriber.resume();
@@ -146,7 +175,7 @@ public class LogStreamingService {
     public void unregisterSubscriber(String executionId, String subscriberId) {
         // it needs to be synchronized as we get and remove if empty, so we must be sure that nobody else is adding a new one in-between
         synchronized (subscriberLock) {
-            Map<String, Pair<FluxSink<Event<FollowLogEvent>>, List<QueryFilter>>> executionSubscribers = subscribers.get(executionId);
+            Map<String, Subscriber> executionSubscribers = subscribers.get(executionId);
             if (executionSubscribers != null) {
                 executionSubscribers.remove(subscriberId);
                 if (executionSubscribers.isEmpty()) {
@@ -165,6 +194,49 @@ public class LogStreamingService {
     void shutdown() {
         if (queueSubscriber != null) {
             queueSubscriber.close();
+        }
+    }
+
+    private final class Subscriber {
+        private final FluxSink<Event<FollowLogEvent>> sink;
+        private final List<QueryFilter> filters;
+        private final Object lock = new Object();
+        private Queue<FollowLogEvent> buffer;
+
+        private Subscriber(FluxSink<Event<FollowLogEvent>> sink, List<QueryFilter> filters, Queue<FollowLogEvent> buffer) {
+            this.sink = sink;
+            this.filters = filters;
+            this.buffer = buffer;
+        }
+
+        private void accept(FollowLogEvent event, String subscriberId) {
+            synchronized (lock) {
+                if (buffer != null) {
+                    buffer.add(event);
+                    return;
+                }
+            }
+
+            deliver(event, subscriberId, sink, filters);
+        }
+
+        private void release(String subscriberId, Set<FollowLogEvent> alreadySent) {
+            // The lock is never held while delivering, so the queue thread shared by every subscriber does not wait on this drain,
+            // and an event dispatched meanwhile is queued behind the held ones instead of overtaking them.
+            while (true) {
+                FollowLogEvent held;
+                synchronized (lock) {
+                    held = buffer == null ? null : buffer.poll();
+                    if (held == null) {
+                        buffer = null;
+                        return;
+                    }
+                }
+
+                if (!alreadySent.contains(held)) {
+                    deliver(held, subscriberId, sink, filters);
+                }
+            }
         }
     }
 }
